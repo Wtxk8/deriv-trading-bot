@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'providers/bot_provider.dart';
 import 'screens/api_token_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'theme/app_theme.dart';
 
 void main() {
   runApp(const ProviderScope(child: DerivBotApp()));
@@ -17,10 +18,7 @@ class DerivBotApp extends StatelessWidget {
     return MaterialApp(
       title: 'Deriv Trading Bot',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.build(),
       home: const _RootRouter(),
     );
   }

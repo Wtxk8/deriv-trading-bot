@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/bot_provider.dart';
 import '../services/bot_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/brand_logo.dart';
 import 'admin_user_management_screen.dart';
 import 'api_token_screen.dart';
 import 'login_screen.dart';
 import 'require_admin.dart';
 
-/// Tableau de bord : état, PnL, configuration, contrôle START/STOP, trades.
+/// Écran principal : header, PnL card, garde-fous, stratégie, trades, CTA.
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
@@ -18,29 +21,17 @@ class DashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
-  final TextEditingController _symbol = TextEditingController(text: 'R_100');
-  final TextEditingController _stake = TextEditingController(text: '1.0');
-  final TextEditingController _stopLoss = TextEditingController(text: '10.0');
-  final TextEditingController _takeProfit = TextEditingController(text: '20.0');
-  String _strategy = 'RISE_FALL';
-  bool _busy = false;
-
   static const List<String> _strategies = ['RISE_FALL', 'OVER_UNDER'];
   static const Set<String> _activeStates = {'RUNNING', 'PAUSED'};
 
-  @override
-  void dispose() {
-    _symbol.dispose();
-    _stake.dispose();
-    _stopLoss.dispose();
-    _takeProfit.dispose();
-    super.dispose();
-  }
+  String _symbol = 'R_100';
+  double _stake = 1.0;
+  double _stopLoss = 10.0;
+  double _takeProfit = 20.0;
+  String _strategy = 'RISE_FALL';
+  bool _busy = false;
 
   BotService get _service => ref.read(botServiceProvider);
-
-  double _parse(TextEditingController c, double fallback) =>
-      double.tryParse(c.text.trim().replaceAll(',', '.')) ?? fallback;
 
   Future<void> _start() async {
     final token = ref.read(tokenProvider) ??
@@ -53,13 +44,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     try {
       await _service.startBot(
         token: token,
-        symbol: _symbol.text.trim(),
-        stake: _parse(_stake, 1),
-        stopLoss: _parse(_stopLoss, 10),
-        takeProfit: _parse(_takeProfit, 20),
+        symbol: _symbol,
+        stake: _stake,
+        stopLoss: _stopLoss,
+        takeProfit: _takeProfit,
         strategy: _strategy,
       );
-      _snack('Bot démarré');
+      _snack('Robot démarré sur $_symbol');
     } on BotServiceException catch (e) {
       _snack(e.toString());
     } catch (e) {
@@ -73,7 +64,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     setState(() => _busy = true);
     try {
       await _service.stopBot();
-      _snack('Bot arrêté');
+      _snack('Robot mis en pause');
     } on BotServiceException catch (e) {
       _snack(e.toString());
     } catch (e) {
@@ -81,20 +72,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  void _openLogin() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-    );
-  }
-
-  void _openAdmin() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const RequireAdmin(child: AdminUserManagementScreen()),
-      ),
-    );
   }
 
   void _snack(String message) {
@@ -111,277 +88,606 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
+  void _openLogin() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+    );
+  }
+
+  void _openAdmin() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const RequireAdmin(child: AdminUserManagementScreen()),
+      ),
+    );
+  }
+
+  void _openConfigSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (_) => _ConfigSheet(
+        symbol: _symbol,
+        stake: _stake,
+        stopLoss: _stopLoss,
+        takeProfit: _takeProfit,
+        strategy: _strategy,
+        strategies: _strategies,
+        onApply: (s, stake, sl, tp, strat) {
+          setState(() {
+            _symbol = s;
+            _stake = stake;
+            _stopLoss = sl;
+            _takeProfit = tp;
+            _strategy = strat;
+          });
+          Navigator.of(context).pop();
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final statusAsync = ref.watch(botStatusStreamProvider);
     final isAdmin = ref.watch(isAdminProvider);
     final isLoggedIn = ref.watch(jwtProvider) != null;
     final Map<String, dynamic> status = statusAsync.maybeWhen(
-      data: (data) => data,
+      data: (d) => d,
       orElse: () => const <String, dynamic>{},
     );
 
     final String state = (status['state'] as String?) ?? 'STOPPED';
-    final double pnl = (status['pnl'] as num?)?.toDouble() ?? 0.0;
     final bool isActive = _activeStates.contains(state);
+    final double pnl = (status['pnl'] as num?)?.toDouble() ?? 0.0;
+    final double balance = (status['current_balance'] as num?)?.toDouble() ?? 0.0;
+    final String currency = (status['currency'] as String?) ?? 'USD';
+    final int won = (status['trades_won'] as num?)?.toInt() ?? 0;
+    final int lost = (status['trades_lost'] as num?)?.toInt() ?? 0;
+    final int total = won + lost;
+    final String winRate = total == 0 ? '—' : '${((won / total) * 100).round()}%';
+
+    final Color pnlColor = pnl >= 0 ? AppColors.success : AppColors.danger;
+    final (String pillText, Color pillColor) = _stateVisual(state);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Deriv Trading Bot'),
-        actions: [
-          if (isAdmin)
-            IconButton(
-              icon: const Icon(Icons.admin_panel_settings),
-              tooltip: 'Page Admin',
-              onPressed: _openAdmin,
-            )
-          else if (!isLoggedIn)
-            IconButton(
-              icon: const Icon(Icons.person_outline),
-              tooltip: 'Connexion',
-              onPressed: _openLogin,
-            ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Changer de token',
-            onPressed: _logout,
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: () async => ref.invalidate(botStatusStreamProvider),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
+      body: SafeArea(
+        child: Column(
           children: [
-            _StatusBadge(state: state, connected: statusAsync.hasValue),
-            const SizedBox(height: 16),
-            _PnlCard(pnl: pnl, status: status),
-            const SizedBox(height: 16),
-            _ConfigForm(
-              symbol: _symbol,
-              stake: _stake,
-              stopLoss: _stopLoss,
-              takeProfit: _takeProfit,
-              strategy: _strategy,
-              strategies: _strategies,
-              enabled: !isActive && !_busy,
-              onStrategyChanged: (v) => setState(() => _strategy = v),
+            _Header(
+              isRunning: isActive,
+              pillText: pillText,
+              pillColor: pillColor,
+              isAdmin: isAdmin,
+              isLoggedIn: isLoggedIn,
+              onLogout: _logout,
+              onLogin: _openLogin,
+              onAdmin: _openAdmin,
             ),
-            const SizedBox(height: 16),
-            _ControlButton(
-              isActive: isActive,
-              busy: _busy,
-              onStart: _start,
-              onStop: _stop,
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: () async => ref.invalidate(botStatusStreamProvider),
+                color: AppColors.primary,
+                backgroundColor: AppColors.surface,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                  children: [
+                    _PnlCard(
+                      pnl: pnl,
+                      balance: balance,
+                      currency: currency,
+                      wins: won,
+                      losses: lost,
+                      winRate: winRate,
+                      pnlColor: pnlColor,
+                    ),
+                    const SizedBox(height: 14),
+                    _GuardsCard(
+                      pnl: pnl,
+                      stopLoss: _stopLoss,
+                      takeProfit: _takeProfit,
+                      currency: currency,
+                      onEdit: _openConfigSheet,
+                    ),
+                    const SizedBox(height: 14),
+                    _StrategyCard(
+                      strategy: _strategy,
+                      symbol: _symbol,
+                      stake: _stake,
+                      currency: currency,
+                      onTap: _openConfigSheet,
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Text('Derniers trades', style: AppTheme.heading(fontSize: 13, letterSpacing: 0.2)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    _TradesList(trades: status['last_trades']),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 24),
-            const Text('5 derniers trades',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            _TradeList(trades: status['last_trades']),
+            _BottomCta(isActive: isActive, busy: _busy, onStart: _start, onStop: _stop),
           ],
         ),
       ),
     );
   }
-}
 
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.state, required this.connected});
-
-  final String state;
-  final bool connected;
-
-  Color get _color {
+  (String, Color) _stateVisual(String state) {
     switch (state) {
       case 'RUNNING':
-        return Colors.green;
-      case 'STOP_LOSS_REACHED':
-      case 'ERROR':
-        return Colors.red;
-      case 'TAKE_PROFIT_REACHED':
-        return Colors.blue;
+        return ('EN MARCHE', AppColors.success);
       case 'PAUSED':
-        return Colors.orange;
+        return ('EN PAUSE', AppColors.warning);
+      case 'STOP_LOSS_REACHED':
+        return ('STOP LOSS', AppColors.danger);
+      case 'TAKE_PROFIT_REACHED':
+        return ('TAKE PROFIT', AppColors.primarySoft);
+      case 'ERROR':
+        return ('ERREUR', AppColors.danger);
       default:
-        return Colors.grey;
+        return ('EN PAUSE', AppColors.warning);
     }
   }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({
+    required this.isRunning,
+    required this.pillText,
+    required this.pillColor,
+    required this.isAdmin,
+    required this.isLoggedIn,
+    required this.onLogout,
+    required this.onLogin,
+    required this.onAdmin,
+  });
+
+  final bool isRunning;
+  final String pillText;
+  final Color pillColor;
+  final bool isAdmin;
+  final bool isLoggedIn;
+  final VoidCallback onLogout;
+  final VoidCallback onLogin;
+  final VoidCallback onAdmin;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-      decoration: BoxDecoration(
-        color: _color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _color, width: 2),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
       child: Row(
         children: [
-          Icon(Icons.circle, color: _color, size: 16),
+          const BrandLogo(size: 38, letter: 'D'),
           const SizedBox(width: 12),
-          Text(
-            state,
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: _color,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Deriv Trading Bot',
+                    style: AppTheme.heading(fontSize: 14.5, letterSpacing: -0.2)),
+                const SizedBox(height: 2),
+                Text('Compte démo · Deriv',
+                    style: GoogleFonts.manrope(
+                        fontSize: 11, color: AppColors.textTertiary, fontWeight: FontWeight.w600, letterSpacing: 0.3)),
+              ],
             ),
           ),
-          const Spacer(),
-          Icon(
-            connected ? Icons.wifi : Icons.wifi_off,
-            color: connected ? Colors.green : Colors.grey,
-            size: 18,
-          ),
+          StatusPill(label: pillText, color: pillColor),
+          const SizedBox(width: 8),
+          if (isAdmin)
+            _IconChip(icon: Icons.admin_panel_settings_outlined, tooltip: 'Admin', onPressed: onAdmin)
+          else if (!isLoggedIn)
+            _IconChip(icon: Icons.person_outline, tooltip: 'Connexion', onPressed: onLogin),
+          const SizedBox(width: 6),
+          _IconChip(icon: Icons.logout_rounded, tooltip: 'Changer de token', onPressed: onLogout),
         ],
       ),
     );
+  }
+}
+
+class _IconChip extends StatelessWidget {
+  const _IconChip({required this.icon, required this.onPressed, this.tooltip});
+  final IconData icon;
+  final VoidCallback onPressed;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final btn = Container(
+      width: 34,
+      height: 34,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        onPressed: onPressed,
+        icon: Icon(icon, size: 16, color: AppColors.textTertiary),
+      ),
+    );
+    return tooltip == null ? btn : Tooltip(message: tooltip!, child: btn);
   }
 }
 
 class _PnlCard extends StatelessWidget {
-  const _PnlCard({required this.pnl, required this.status});
+  const _PnlCard({
+    required this.pnl,
+    required this.balance,
+    required this.currency,
+    required this.wins,
+    required this.losses,
+    required this.winRate,
+    required this.pnlColor,
+  });
 
   final double pnl;
-  final Map<String, dynamic> status;
+  final double balance;
+  final String currency;
+  final int wins;
+  final int losses;
+  final String winRate;
+  final Color pnlColor;
 
   @override
   Widget build(BuildContext context) {
-    final Color color = pnl >= 0 ? Colors.green : Colors.red;
-    final String currency = (status['currency'] as String?) ?? '';
-    final double balance =
-        (status['current_balance'] as num?)?.toDouble() ?? 0.0;
-    final int won = (status['trades_won'] as num?)?.toInt() ?? 0;
-    final int lost = (status['trades_lost'] as num?)?.toInt() ?? 0;
-
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const Text('PnL Session',
-                style: TextStyle(color: Colors.grey, fontSize: 14)),
-            const SizedBox(height: 4),
-            Text(
-              '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)} $currency',
-              style: TextStyle(
-                fontSize: 40,
-                fontWeight: FontWeight.bold,
-                color: color,
+    final sign = pnl >= 0 ? '+' : '-';
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: AppTheme.cardGradient(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('PNL DE LA SESSION', style: AppTheme.labelMicro(color: AppColors.textTertiary).copyWith(fontSize: 11, letterSpacing: 0.9)),
+                    const SizedBox(height: 9),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text('$sign${pnl.abs().toStringAsFixed(2)}',
+                            style: AppTheme.mono(fontSize: 35, fontWeight: FontWeight.w700, letterSpacing: -1.5, color: pnlColor)),
+                        const SizedBox(width: 8),
+                        Text(currency,
+                            style: GoogleFonts.manrope(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textTertiary)),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _stat('Solde', '${balance.toStringAsFixed(2)} $currency'),
-                _stat('Gagnés', '$won', Colors.green),
-                _stat('Perdus', '$lost', Colors.red),
-              ],
-            ),
-          ],
-        ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('SOLDE', style: AppTheme.labelMicro().copyWith(fontSize: 11, letterSpacing: 0.9)),
+                  const SizedBox(height: 9),
+                  Text(balance.toStringAsFixed(2), style: AppTheme.mono(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(child: _MiniStat(label: 'GAGNÉS', value: '$wins', color: AppColors.success)),
+              const SizedBox(width: 10),
+              Expanded(child: _MiniStat(label: 'PERDUS', value: '$losses', color: AppColors.danger)),
+              const SizedBox(width: 10),
+              Expanded(child: _MiniStat(label: 'RÉUSSITE', value: winRate, color: AppColors.textPrimary)),
+            ],
+          ),
+        ],
       ),
     );
   }
+}
 
-  Widget _stat(String label, String value, [Color? color]) {
+class _MiniStat extends StatelessWidget {
+  const _MiniStat({required this.label, required this.value, required this.color});
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.035),
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: AppTheme.labelMicro()),
+          const SizedBox(height: 5),
+          Text(value, style: AppTheme.mono(fontSize: 16, fontWeight: FontWeight.w700, color: color)),
+        ],
+      ),
+    );
+  }
+}
+
+class _GuardsCard extends StatelessWidget {
+  const _GuardsCard({
+    required this.pnl,
+    required this.stopLoss,
+    required this.takeProfit,
+    required this.currency,
+    required this.onEdit,
+  });
+
+  final double pnl;
+  final double stopLoss;
+  final double takeProfit;
+  final String currency;
+  final VoidCallback onEdit;
+
+  @override
+  Widget build(BuildContext context) {
+    final double slUsed = pnl < 0 ? pnl.abs() : 0;
+    final double tpUsed = pnl > 0 ? pnl : 0;
+    final double slPct = stopLoss <= 0 ? 0 : (slUsed / stopLoss).clamp(0, 1);
+    final double tpPct = takeProfit <= 0 ? 0 : (tpUsed / takeProfit).clamp(0, 1);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: AppTheme.card(radius: AppRadii.lg + 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('Garde-fous du jour', style: AppTheme.heading(fontSize: 12.5, letterSpacing: 0.2)),
+              const Spacer(),
+              InkWell(
+                onTap: onEdit,
+                child: Text('Modifier', style: GoogleFonts.manrope(fontSize: 12, color: AppColors.primarySoft, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _GuardRow(label: 'Stop loss', used: slUsed, cap: stopLoss, currency: currency, pct: slPct, color: AppColors.danger),
+          const SizedBox(height: 13),
+          _GuardRow(label: 'Take profit', used: tpUsed, cap: takeProfit, currency: currency, pct: tpPct, color: AppColors.success),
+        ],
+      ),
+    );
+  }
+}
+
+class _GuardRow extends StatelessWidget {
+  const _GuardRow({
+    required this.label,
+    required this.used,
+    required this.cap,
+    required this.currency,
+    required this.pct,
+    required this.color,
+  });
+
+  final String label;
+  final double used;
+  final double cap;
+  final String currency;
+  final double pct;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-        const SizedBox(height: 2),
-        Text(value,
-            style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: GoogleFonts.manrope(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.textTertiary)),
+            Text('${used.toStringAsFixed(2)} / ${cap.toStringAsFixed(0)} $currency',
+                style: AppTheme.mono(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+          ],
+        ),
+        const SizedBox(height: 7),
+        Container(
+          height: 6,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: FractionallySizedBox(
+            widthFactor: pct,
+            alignment: Alignment.centerLeft,
+            child: Container(
+              decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(999)),
+            ),
+          ),
+        ),
       ],
     );
   }
 }
 
-class _ConfigForm extends StatelessWidget {
-  const _ConfigForm({
+class _StrategyCard extends StatelessWidget {
+  const _StrategyCard({
+    required this.strategy,
     required this.symbol,
     required this.stake,
-    required this.stopLoss,
-    required this.takeProfit,
-    required this.strategy,
-    required this.strategies,
-    required this.enabled,
-    required this.onStrategyChanged,
+    required this.currency,
+    required this.onTap,
   });
 
-  final TextEditingController symbol;
-  final TextEditingController stake;
-  final TextEditingController stopLoss;
-  final TextEditingController takeProfit;
   final String strategy;
-  final List<String> strategies;
-  final bool enabled;
-  final ValueChanged<String> onStrategyChanged;
+  final String symbol;
+  final double stake;
+  final String currency;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+    final label = strategy == 'RISE_FALL' ? 'Rise / Fall' : 'Over / Under';
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadii.lg + 2),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
+        decoration: AppTheme.card(radius: AppRadii.lg + 2),
+        child: Row(
           children: [
-            _field(symbol, 'Symbole (ex: R_100)', TextInputType.text),
-            const SizedBox(height: 12),
-            _field(stake, 'Mise (Stake)',
-                const TextInputType.numberWithOptions(decimal: true)),
-            const SizedBox(height: 12),
-            _field(stopLoss, 'Daily Stop Loss',
-                const TextInputType.numberWithOptions(decimal: true)),
-            const SizedBox(height: 12),
-            _field(takeProfit, 'Daily Take Profit',
-                const TextInputType.numberWithOptions(decimal: true)),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: strategy,
-              decoration: const InputDecoration(
-                labelText: 'Stratégie',
-                border: OutlineInputBorder(),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('STRATÉGIE ACTIVE', style: AppTheme.labelMicro().copyWith(fontSize: 11, letterSpacing: 0.8)),
+                  const SizedBox(height: 4),
+                  Text(label, style: AppTheme.heading(fontSize: 14.5, letterSpacing: -0.2)),
+                ],
               ),
-              items: strategies
-                  .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                  .toList(),
-              onChanged: enabled
-                  ? (v) {
-                      if (v != null) onStrategyChanged(v);
-                    }
-                  : null,
             ),
+            _MonoChip(text: symbol, color: AppColors.primarySoft, bg: AppColors.primary.withValues(alpha: 0.14)),
+            const SizedBox(width: 6),
+            _MonoChip(text: '${stake.toStringAsFixed(2)} $currency', color: AppColors.textSecondary, bg: Colors.white.withValues(alpha: 0.05)),
+            const SizedBox(width: 4),
+            const Icon(Icons.chevron_right_rounded, color: AppColors.textTertiary, size: 20),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _field(
-      TextEditingController c, String label, TextInputType type) {
-    return TextField(
-      controller: c,
-      enabled: enabled,
-      keyboardType: type,
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        isDense: true,
-      ),
+class _MonoChip extends StatelessWidget {
+  const _MonoChip({required this.text, required this.color, required this.bg});
+  final String text;
+  final Color color;
+  final Color bg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(9)),
+      child: Text(text, style: AppTheme.mono(fontSize: 11, fontWeight: FontWeight.w700, color: color)),
     );
   }
 }
 
-class _ControlButton extends StatelessWidget {
-  const _ControlButton({
-    required this.isActive,
-    required this.busy,
-    required this.onStart,
-    required this.onStop,
-  });
+class _TradesList extends StatelessWidget {
+  const _TradesList({required this.trades});
+  final dynamic trades;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Map<String, dynamic>> items = trades is List
+        ? (trades as List).whereType<Map<String, dynamic>>().toList(growable: false)
+        : const <Map<String, dynamic>>[];
+
+    if (items.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadii.lg),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.12), width: 1, style: BorderStyle.solid),
+        ),
+        child: Column(
+          children: [
+            Text('Aucun trade sur cette session',
+                style: GoogleFonts.manrope(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+            const SizedBox(height: 6),
+            Text('Démarrez le robot pour ouvrir la première position.',
+                style: GoogleFonts.manrope(fontSize: 12, color: AppColors.textTertiary)),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        for (final t in items) ...[
+          _TradeRow(trade: t),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+class _TradeRow extends StatelessWidget {
+  const _TradeRow({required this.trade});
+  final Map<String, dynamic> trade;
+
+  @override
+  Widget build(BuildContext context) {
+    final double profit = (trade['profit'] as num?)?.toDouble() ?? 0.0;
+    final bool won = (trade['result'] as String?) == 'won';
+    final Color color = won ? AppColors.success : AppColors.danger;
+    final Color chipBg = color.withValues(alpha: 0.13);
+    final String type = (trade['contract_type'] as String?) ?? '';
+    final String dirLabel = type.contains('CALL') ? 'Hausse' : (type.contains('PUT') ? 'Baisse' : type);
+    final String arrow = won ? '▲' : '▼';
+    final String symbol = (trade['symbol'] as String?) ?? '';
+    final double stake = (trade['stake'] as num?)?.toDouble() ?? 0.0;
+    final String time = _fmtTime(trade['timestamp']);
+    final String sign = profit >= 0 ? '+' : '-';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: AppTheme.card(radius: AppRadii.md + 2, border: AppColors.borderSoft),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(color: chipBg, borderRadius: BorderRadius.circular(11)),
+            alignment: Alignment.center,
+            child: Text(arrow, style: GoogleFonts.manrope(color: color, fontSize: 13, fontWeight: FontWeight.w800)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('$dirLabel · $symbol',
+                    style: GoogleFonts.manrope(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                const SizedBox(height: 3),
+                Text('$time · mise ${stake.toStringAsFixed(2)}',
+                    style: AppTheme.mono(fontSize: 10.5, color: AppColors.textTertiary)),
+              ],
+            ),
+          ),
+          Text('$sign${profit.abs().toStringAsFixed(2)} \$',
+              style: AppTheme.mono(fontSize: 14, fontWeight: FontWeight.w700, color: color)),
+        ],
+      ),
+    );
+  }
+
+  String _fmtTime(dynamic epoch) {
+    final double? seconds = (epoch as num?)?.toDouble();
+    if (seconds == null) return '';
+    final dt = DateTime.fromMillisecondsSinceEpoch((seconds * 1000).round()).toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+  }
+}
+
+class _BottomCta extends StatelessWidget {
+  const _BottomCta({required this.isActive, required this.busy, required this.onStart, required this.onStop});
 
   final bool isActive;
   final bool busy;
@@ -390,95 +696,349 @@ class _ControlButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 56,
-      child: FilledButton.icon(
-        onPressed: busy ? null : (isActive ? onStop : onStart),
-        icon: busy
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white),
-              )
-            : Icon(isActive ? Icons.stop : Icons.play_arrow),
-        label: Text(
-          isActive ? 'STOP BOT' : 'START BOT',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+    final label = isActive ? 'Arrêter le robot' : 'Démarrer le robot';
+    final icon = isActive ? Icons.stop_rounded : Icons.play_arrow_rounded;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [AppColors.bg.withValues(alpha: 0.0), AppColors.bg],
+          stops: const [0.0, 0.55],
         ),
-        style: FilledButton.styleFrom(
-          backgroundColor: isActive ? Colors.red : Colors.green,
+      ),
+      child: SizedBox(
+        height: 58,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(AppRadii.lg),
+          child: Ink(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppRadii.lg),
+              gradient: isActive
+                  ? null
+                  : const LinearGradient(
+                      begin: Alignment(-0.5, -1),
+                      end: Alignment(1, 1),
+                      colors: [AppColors.success, Color(0xFF22A877)],
+                    ),
+              color: isActive ? AppColors.danger.withValues(alpha: 0.14) : null,
+              boxShadow: isActive
+                  ? null
+                  : [
+                      BoxShadow(color: AppColors.success.withValues(alpha: 0.55), blurRadius: 30, offset: const Offset(0, 14), spreadRadius: -14),
+                    ],
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(AppRadii.lg),
+              onTap: busy ? null : (isActive ? onStop : onStart),
+              child: Center(
+                child: busy
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(icon, size: 20, color: isActive ? AppColors.danger : const Color(0xFF04231A)),
+                          const SizedBox(width: 8),
+                          Text(label,
+                              style: GoogleFonts.manrope(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.3,
+                                color: isActive ? AppColors.danger : const Color(0xFF04231A),
+                              )),
+                        ],
+                      ),
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-class _TradeList extends StatelessWidget {
-  const _TradeList({required this.trades});
+/// Bottom-sheet de config : symbole / stratégie / mise / SL / TP.
+class _ConfigSheet extends StatefulWidget {
+  const _ConfigSheet({
+    required this.symbol,
+    required this.stake,
+    required this.stopLoss,
+    required this.takeProfit,
+    required this.strategy,
+    required this.strategies,
+    required this.onApply,
+  });
 
-  final dynamic trades;
+  final String symbol;
+  final double stake;
+  final double stopLoss;
+  final double takeProfit;
+  final String strategy;
+  final List<String> strategies;
+  final void Function(String symbol, double stake, double sl, double tp, String strategy) onApply;
+
+  @override
+  State<_ConfigSheet> createState() => _ConfigSheetState();
+}
+
+class _ConfigSheetState extends State<_ConfigSheet> {
+  static const List<String> _symbols = ['R_10', 'R_25', 'R_50', 'R_100'];
+
+  late String _symbol = widget.symbol;
+  late String _strategy = widget.strategy;
+  late double _stake = widget.stake;
+  late double _sl = widget.stopLoss;
+  late double _tp = widget.takeProfit;
+
+  void _bump(String kind, double delta) {
+    setState(() {
+      switch (kind) {
+        case 'stake':
+          _stake = (_stake + delta).clamp(0.5, 1000);
+        case 'sl':
+          _sl = (_sl + delta).clamp(1, 10000);
+        case 'tp':
+          _tp = (_tp + delta).clamp(1, 10000);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final List<Map<String, dynamic>> items = (trades is List)
-        ? (trades as List)
-            .whereType<Map<String, dynamic>>()
-            .toList(growable: false)
-        : const <Map<String, dynamic>>[];
-
-    if (items.isEmpty) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Center(
-            child: Text('Aucun trade exécuté',
-                style: TextStyle(color: Colors.grey)),
+    final media = MediaQuery.of(context);
+    return Padding(
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: SafeArea(
+        top: false,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(22, 10, 22, 20),
+          decoration: const BoxDecoration(
+            color: AppColors.bg,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
           ),
-        ),
-      );
-    }
-
-    return Column(
-      children: items.map(_tradeCard).toList(),
-    );
-  }
-
-  Widget _tradeCard(Map<String, dynamic> t) {
-    final double profit = (t['profit'] as num?)?.toDouble() ?? 0.0;
-    final bool won = (t['result'] as String?) == 'won';
-    final Color color = won ? Colors.green : Colors.red;
-    final String type = (t['contract_type'] as String?) ?? '';
-    final String currency = ''; // profit déjà exprimé en devise du compte
-    final String time = _fmtTime(t['timestamp']);
-
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        leading: Icon(
-          won ? Icons.trending_up : Icons.trending_down,
-          color: color,
-        ),
-        title: Text(type.isEmpty ? 'Contrat' : type),
-        subtitle: Text('#${t['contract_id'] ?? '-'}  ·  $time'),
-        trailing: Text(
-          '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}$currency',
-          style: TextStyle(
-            color: color,
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+              ),
+              Text('Paramètres du robot', style: AppTheme.heading(fontSize: 21, letterSpacing: -0.5)),
+              const SizedBox(height: 14),
+              _sectionCard(
+                title: 'INDICE',
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final s in _symbols) _pill(s, selected: _symbol == s, onTap: () => setState(() => _symbol = s)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              _sectionCard(
+                title: 'STRATÉGIE',
+                child: Column(
+                  children: [
+                    for (final st in widget.strategies)
+                      _strategyRow(st, selected: _strategy == st, onTap: () => setState(() => _strategy = st)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              _sectionCard(
+                title: 'GESTION DU RISQUE',
+                child: Column(
+                  children: [
+                    _numericRow('Mise par trade', _stake.toStringAsFixed(2), () => _bump('stake', -0.5), () => _bump('stake', 0.5)),
+                    const SizedBox(height: 14),
+                    _numericRow('Stop loss du jour', _sl.toStringAsFixed(0), () => _bump('sl', -1), () => _bump('sl', 1)),
+                    const SizedBox(height: 14),
+                    _numericRow('Take profit du jour', _tp.toStringAsFixed(0), () => _bump('tp', -1), () => _bump('tp', 1)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                height: 54,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary.withValues(alpha: 0.16),
+                    foregroundColor: AppColors.primarySoft,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadii.lg - 2)),
+                  ),
+                  onPressed: () => widget.onApply(_symbol, _stake, _sl, _tp, _strategy),
+                  child: Text('Appliquer et revenir au robot',
+                      style: GoogleFonts.manrope(fontSize: 15, fontWeight: FontWeight.w800)),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  String _fmtTime(dynamic epoch) {
-    final double? seconds = (epoch as num?)?.toDouble();
-    if (seconds == null) return '';
-    final dt =
-        DateTime.fromMillisecondsSinceEpoch((seconds * 1000).round()).toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+  Widget _sectionCard({required String title, required Widget child}) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        decoration: AppTheme.card(radius: AppRadii.lg + 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: AppTheme.labelMicro().copyWith(fontSize: 11, letterSpacing: 0.8)),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      );
+
+  Widget _pill(String name, {required bool selected, required VoidCallback onTap}) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(11),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.04),
+          border: Border.all(
+            color: selected ? AppColors.primary.withValues(alpha: 0.5) : AppColors.border,
+            width: 1,
+          ),
+          borderRadius: BorderRadius.circular(11),
+        ),
+        child: Text(name,
+            style: AppTheme.mono(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: selected ? AppColors.primarySoft : AppColors.textSecondary,
+            )),
+      ),
+    );
+  }
+
+  Widget _strategyRow(String value, {required bool selected, required VoidCallback onTap}) {
+    final label = value == 'RISE_FALL' ? 'Rise / Fall' : 'Over / Under';
+    final desc = value == 'RISE_FALL' ? 'Direction du prochain tick' : 'Seuil sur le dernier chiffre';
+    final risk = value == 'RISE_FALL' ? 'Risque modéré' : 'Risque élevé';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.primary.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.025),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? AppColors.primary.withValues(alpha: 0.45) : AppColors.borderSoft,
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 18,
+                height: 18,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: selected ? AppColors.primary : Colors.white.withValues(alpha: 0.2),
+                    width: 2,
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: selected ? AppColors.primary : Colors.transparent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label, style: GoogleFonts.manrope(fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                    const SizedBox(height: 3),
+                    Text(desc, style: GoogleFonts.manrope(fontSize: 11.5, color: AppColors.textTertiary)),
+                  ],
+                ),
+              ),
+              Text(risk, style: AppTheme.mono(fontSize: 10.5, fontWeight: FontWeight.w700, color: AppColors.textTertiary)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _numericRow(String label, String value, VoidCallback dec, VoidCallback inc) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: GoogleFonts.manrope(fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+              const SizedBox(height: 3),
+              Text('Ajuster à l\'unité', style: GoogleFonts.manrope(fontSize: 11.5, color: AppColors.textTertiary)),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceHigh,
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(color: AppColors.border, width: 1),
+          ),
+          child: Row(
+            children: [
+              _stepper('−', dec),
+              SizedBox(
+                width: 56,
+                child: Center(
+                  child: Text(value, style: AppTheme.mono(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                ),
+              ),
+              _stepper('+', inc),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _stepper(String label, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(9),
+      child: SizedBox(
+        width: 32,
+        height: 32,
+        child: Center(
+          child: Text(label, style: GoogleFonts.manrope(fontSize: 17, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+        ),
+      ),
+    );
   }
 }

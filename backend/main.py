@@ -16,9 +16,12 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -250,6 +253,22 @@ def delete_user(
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
     db.delete(user)
     db.commit()
+
+
+# ----------------------------------------------------------------------
+# Console admin web (SPA statique)
+# ----------------------------------------------------------------------
+_ADMIN_HTML = Path(__file__).parent / "static" / "admin.html"
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_console_root() -> FileResponse:
+    return FileResponse(_ADMIN_HTML, media_type="text/html")
+
+
+@app.get("/admin/", include_in_schema=False)
+async def admin_console() -> FileResponse:
+    return FileResponse(_ADMIN_HTML, media_type="text/html")
 
 
 @app.get("/health")

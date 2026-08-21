@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deriv Trading Bot — Administration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080B10; --surface: #0E131A; --surface-alt: #10151C; --surface-high: #141B26; --surface-low: #0D1218;
+  --border: rgba(255,255,255,.08); --border-soft: rgba(255,255,255,.06);
+  --fg: #E8EDF4; --fg-2: #9AA6B6; --fg-3: #7C8899;
+  --primary: #6C7BFF; --primary-deep: #4D59E0; --primary-soft: #8B9BFF;
+  --success: #3ED598; --danger: #FF5C7A; --warning: #FFB247;
+}
+* { box-sizing: border-box }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: Manrope, system-ui, sans-serif; -webkit-font-smoothing: antialiased }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace }
+button { font-family: inherit; cursor: pointer }
+input { font-family: inherit }
+.hidden { display: none !important }
+
+/* Login */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(900px 500px at 50% -10%, #131c2a 0%, #070a0f 60%, var(--bg) 100%) }
+.login-card { width: 100%; max-width: 420px; background: linear-gradient(160deg, #141b26, var(--surface-low)); border: 1px solid var(--border); border-radius: 22px; padding: 32px }
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px }
+.brand-logo { width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(145deg, var(--primary), #3b46b8); display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 18px; box-shadow: 0 10px 26px -8px rgba(108,123,255,.8) }
+.brand-title { font-weight: 800; font-size: 15px; letter-spacing: -.2px }
+.brand-sub { font-size: 11.5px; color: var(--fg-3); font-weight: 600 }
+.title { font-size: 24px; font-weight: 800; letter-spacing: -.5px; margin: 6px 0 4px }
+.hint { color: var(--fg-3); font-size: 13.5px; line-height: 1.5; margin-bottom: 22px }
+.label { font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--fg-3); display: block; margin: 14px 0 6px }
+.input { width: 100%; height: 48px; background: var(--surface-alt); border: 1px solid var(--border); color: var(--fg); border-radius: 12px; padding: 0 14px; font-size: 14.5px; font-weight: 500; outline: none }
+.input:focus { border-color: var(--primary); background: #131A24 }
+.btn-primary { width: 100%; height: 52px; margin-top: 20px; border: 0; border-radius: 14px; background: linear-gradient(135deg, var(--primary), var(--primary-deep)); color: #fff; font-size: 15px; font-weight: 800; letter-spacing: .2px; box-shadow: 0 14px 30px -12px rgba(108,123,255,.9) }
+.btn-primary:hover { filter: brightness(1.08) }
+.btn-primary:disabled { opacity: .6; cursor: not-allowed }
+.error { color: var(--danger); font-size: 12.5px; font-weight: 600; margin-top: 12px; min-height: 18px }
+
+/* App shell */
+.shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr }
+.topbar { display: flex; align-items: center; gap: 14px; padding: 14px 24px; border-bottom: 1px solid var(--border) }
+.chip { padding: 6px 10px; border-radius: 999px; background: rgba(108,123,255,.14); color: var(--primary-soft); font-size: 11.5px; font-weight: 700; font-family: 'JetBrains Mono', monospace }
+.icon-btn { width: 34px; height: 34px; border-radius: 10px; background: var(--surface-alt); border: 1px solid var(--border); color: var(--fg-3); display: grid; place-items: center }
+.icon-btn:hover { color: var(--fg); background: #171E27 }
+.main { padding: 24px 24px 48px; max-width: 1180px; margin: 0 auto; width: 100% }
+.section-title { font-size: 22px; font-weight: 800; letter-spacing: -.5px; margin: 0 0 6px }
+.section-hint { color: var(--fg-3); font-size: 13.5px; margin: 0 0 20px }
+
+.toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap }
+.search { flex: 1; min-width: 240px; height: 44px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; padding: 0 14px; color: var(--fg); font-size: 14px }
+.search:focus { outline: none; border-color: var(--primary) }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px }
+.stat { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px }
+.stat-label { font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--fg-3) }
+.stat-value { margin-top: 6px; font-size: 22px; font-weight: 800; letter-spacing: -.5px; font-family: 'JetBrains Mono', monospace }
+.stat-value.success { color: var(--success) }
+.stat-value.warn { color: var(--warning) }
+
+.users-list { display: flex; flex-direction: column; gap: 10px }
+.user-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; flex-wrap: wrap }
+.avatar { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(145deg, var(--primary), #3b46b8); display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 15px; flex: none }
+.user-main { flex: 1; min-width: 0 }
+.user-name { font-size: 14px; font-weight: 700 }
+.user-email { color: var(--fg-3); font-size: 12.5px; margin-top: 2px }
+.badge { padding: 5px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; font-family: 'JetBrains Mono', monospace }
+.badge.admin { background: rgba(108,123,255,.16); color: var(--primary-soft) }
+.badge.user { background: rgba(255,255,255,.06); color: var(--fg-2) }
+.badge.active { background: rgba(62,213,152,.14); color: var(--success) }
+.badge.suspended { background: rgba(255,92,122,.14); color: var(--danger) }
+.actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap }
+.btn-mini { border: 1px solid var(--border); background: var(--surface-alt); color: var(--fg-2); padding: 7px 12px; border-radius: 10px; font-size: 12px; font-weight: 700 }
+.btn-mini:hover { color: var(--fg); background: var(--surface-high) }
+.btn-mini.danger { border-color: rgba(255,92,122,.3); color: var(--danger); background: rgba(255,92,122,.08) }
+.btn-mini.danger:hover { background: rgba(255,92,122,.16) }
+.empty { padding: 40px; text-align: center; color: var(--fg-3); background: var(--surface); border: 1px dashed rgba(255,255,255,.12); border-radius: 16px }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--surface-high); border: 1px solid var(--border); color: var(--fg); padding: 12px 18px; border-radius: 12px; font-size: 13px; font-weight: 700; box-shadow: 0 18px 40px -14px rgba(0,0,0,.9); z-index: 100 }
+.toast.err { border-color: rgba(255,92,122,.4); color: var(--danger) }
+
+/* Modal */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: grid; place-items: center; padding: 20px; z-index: 50 }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; max-width: 420px; width: 100% }
+.modal h3 { margin: 0 0 8px; font-size: 18px; font-weight: 800 }
+.modal p { color: var(--fg-2); font-size: 13.5px; line-height: 1.5; margin: 0 0 20px }
+.modal-row { display: flex; gap: 10px; justify-content: flex-end }
+.btn-secondary { border: 1px solid var(--border); background: transparent; color: var(--fg-2); padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
+.btn-danger { border: 0; background: var(--danger); color: #fff; padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
+.btn-confirm { border: 0; background: var(--primary); color: #fff; padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="login-wrap">
+  <form class="login-card" onsubmit="return login(event)">
+    <div class="brand">
+      <div class="brand-logo">D</div>
+      <div>
+        <div class="brand-title">Deriv Trading Bot</div>
+        <div class="brand-sub">Console d'administration</div>
+      </div>
+    </div>
+    <div class="title">Connexion admin</div>
+    <div class="hint">Espace réservé aux comptes disposant du rôle <code style="color:var(--primary-soft);font-family:'JetBrains Mono',monospace">admin</code>.</div>
+    <label class="label" for="email">E-mail</label>
+    <input class="input" id="email" type="email" autocomplete="username" placeholder="admin@innovahub226.com" required>
+    <label class="label" for="password">Mot de passe</label>
+    <input class="input" id="password" type="password" autocomplete="current-password" placeholder="••••••••••" required>
+    <button class="btn-primary" id="login-btn" type="submit">Se connecter</button>
+    <div class="error" id="login-error"></div>
+  </form>
+</div>
+
+<!-- APP -->
+<div id="app-view" class="shell hidden">
+  <div class="topbar">
+    <div class="brand-logo" style="width:38px;height:38px;font-size:15px">D</div>
+    <div>
+      <div class="brand-title">Deriv Trading Bot</div>
+      <div class="brand-sub">Administration</div>
+    </div>
+    <span class="chip" id="me-chip"></span>
+    <button class="icon-btn" title="Déconnexion" onclick="logout()">↩</button>
+  </div>
+
+  <div class="main">
+    <div class="section-title">Utilisateurs</div>
+    <div class="section-hint">Gérez rôles, statuts et suppression. Les modifications sont immédiates.</div>
+
+    <div class="stat-row" id="stats"></div>
+
+    <div class="toolbar">
+      <input class="search" id="search" type="text" placeholder="Rechercher par nom ou email…" oninput="render()">
+      <button class="btn-mini" onclick="load()">Rafraîchir</button>
+    </div>
+
+    <div id="users-list" class="users-list"></div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p id="modal-body"></p>
+    <div class="modal-row">
+      <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+      <button id="modal-confirm" class="btn-confirm">Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const API = window.location.origin;
+const TOKEN_KEY = 'admin_jwt';
+let state = { users: [], me: null };
+
+function toast(msg, err) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden', 'err');
+  if (err) t.classList.add('err');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), 3200);
+}
+function auth() { return localStorage.getItem(TOKEN_KEY); }
+function saveAuth(jwt) { localStorage.setItem(TOKEN_KEY, jwt); }
+function clearAuth() { localStorage.removeItem(TOKEN_KEY); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      ...(auth() ? { 'Authorization': 'Bearer ' + auth() } : {}),
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401 || res.status === 403) {
+    if (opts.method !== 'POST' || !path.startsWith('/login')) {
+      clearAuth();
+      showLogin();
+    }
+    const b = await res.json().catch(() => ({}));
+    throw new Error(b.detail || 'Non autorisé');
+  }
+  if (res.status === 204) return null;
+  const b = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(b.detail || ('HTTP ' + res.status));
+  return b;
+}
+
+async function login(e) {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const err = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+  err.textContent = '';
+  btn.disabled = true; btn.textContent = 'Connexion…';
+  try {
+    const r = await api('/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    if (r.user?.role !== 'admin') throw new Error("Ce compte n'a pas le rôle admin.");
+    saveAuth(r.access_token);
+    state.me = r.user;
+    await afterLogin();
+  } catch (e) {
+    err.textContent = e.message || 'Échec de connexion';
+    btn.disabled = false; btn.textContent = 'Se connecter';
+  }
+  return false;
+}
+
+function logout() {
+  clearAuth();
+  state = { users: [], me: null };
+  showLogin();
+}
+
+function showLogin() {
+  document.getElementById('app-view').classList.add('hidden');
+  document.getElementById('login-view').classList.remove('hidden');
+  const btn = document.getElementById('login-btn');
+  btn.disabled = false; btn.textContent = 'Se connecter';
+}
+
+async function afterLogin() {
+  document.getElementById('login-view').classList.add('hidden');
+  document.getElementById('app-view').classList.remove('hidden');
+  document.getElementById('me-chip').textContent = state.me?.email || '';
+  await load();
+}
+
+async function load() {
+  try {
+    state.users = await api('/admin/users');
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
+function stats() {
+  const total = state.users.length;
+  const admins = state.users.filter(u => u.role === 'admin').length;
+  const active = state.users.filter(u => u.active).length;
+  const suspended = total - active;
+  return [
+    { label: 'Total', value: total },
+    { label: 'Admins', value: admins, cls: 'success' },
+    { label: 'Actifs', value: active, cls: 'success' },
+    { label: 'Suspendus', value: suspended, cls: suspended ? 'warn' : '' },
+  ];
+}
+
+function render() {
+  const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
+  const list = document.getElementById('users-list');
+  const statsEl = document.getElementById('stats');
+
+  statsEl.innerHTML = stats().map(s =>
+    `<div class="stat"><div class="stat-label">${s.label}</div><div class="stat-value ${s.cls || ''}">${s.value}</div></div>`
+  ).join('');
+
+  const filtered = state.users.filter(u =>
+    !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+  );
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty">Aucun utilisateur ne correspond à la recherche.</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(u => {
+    const initial = (u.name || u.email || '?').trim()[0]?.toUpperCase() || '?';
+    const isMe = state.me && u.id === state.me.id;
+    const roleBadge = `<span class="badge ${u.role === 'admin' ? 'admin' : 'user'}">${u.role}</span>`;
+    const statusBadge = `<span class="badge ${u.active ? 'active' : 'suspended'}">${u.active ? 'actif' : 'suspendu'}</span>`;
+    const roleAction = isMe
+      ? ''
+      : `<button class="btn-mini" onclick="askRole(${u.id})">${u.role === 'admin' ? 'Rétrograder' : 'Promouvoir admin'}</button>`;
+    const activeAction = isMe
+      ? ''
+      : `<button class="btn-mini" onclick="askActive(${u.id})">${u.active ? 'Suspendre' : 'Réactiver'}</button>`;
+    const deleteAction = isMe
+      ? ''
+      : `<button class="btn-mini danger" onclick="askDelete(${u.id})">Supprimer</button>`;
+    return `
+      <div class="user-card">
+        <div class="avatar">${initial}</div>
+        <div class="user-main">
+          <div class="user-name">${escapeHtml(u.name || '(sans nom)')}${isMe ? ' <span style="color:var(--primary-soft);font-size:11px;font-weight:700">· vous</span>' : ''}</div>
+          <div class="user-email">${escapeHtml(u.email)}</div>
+        </div>
+        ${roleBadge}
+        ${statusBadge}
+        <div class="actions">${roleAction}${activeAction}${deleteAction}</div>
+      </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function askRole(id) {
+  const u = state.users.find(x => x.id === id);
+  const newRole = u.role === 'admin' ? 'user' : 'admin';
+  openModal('Changer le rôle', `${u.name || u.email} passera de « ${u.role} » à « ${newRole} ». Continuer ?`, async () => {
+    try {
+      const upd = await api('/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ role: newRole }) });
+      state.users = state.users.map(x => x.id === id ? upd : x);
+      render(); toast('Rôle mis à jour');
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+function askActive(id) {
+  const u = state.users.find(x => x.id === id);
+  const activate = !u.active;
+  openModal(activate ? 'Réactiver le compte' : 'Suspendre le compte',
+    `${activate ? 'Réactiver' : 'Suspendre'} le compte de ${u.name || u.email} ?`,
+    async () => {
+      try {
+        const upd = await api('/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ active: activate }) });
+        state.users = state.users.map(x => x.id === id ? upd : x);
+        render(); toast('Statut mis à jour');
+      } catch (e) { toast(e.message, true); }
+    },
+    !activate,
+  );
+}
+
+function askDelete(id) {
+  const u = state.users.find(x => x.id === id);
+  openModal('Supprimer le compte',
+    `Supprimer définitivement le compte de ${u.name || u.email} (${u.email}) ? Cette action est irréversible.`,
+    async () => {
+      try {
+        await api('/admin/users/' + id, { method: 'DELETE' });
+        state.users = state.users.filter(x => x.id !== id);
+        render(); toast('Compte supprimé');
+      } catch (e) { toast(e.message, true); }
+    },
+    true,
+  );
+}
+
+function openModal(title, body, onConfirm, danger) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').textContent = body;
+  const btn = document.getElementById('modal-confirm');
+  btn.className = danger ? 'btn-danger' : 'btn-confirm';
+  btn.onclick = async () => { closeModal(); await onConfirm(); };
+  document.getElementById('modal').classList.remove('hidden');
+}
+function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+
+// Boot
+(async function () {
+  if (auth()) {
+    try {
+      state.me = await api('/me');
+      if (state.me.role === 'admin') { await afterLogin(); return; }
+      clearAuth();
+    } catch { clearAuth(); }
+  }
+  showLogin();
+})();
+</script>
+</body>
+</html>
