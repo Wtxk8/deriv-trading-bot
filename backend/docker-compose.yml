@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: .
+    image: deriv-bot-backend:latest
+    container_name: deriv-bot-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TRADING_DATABASE_URL: sqlite:////app/data/app.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/app/data
+
+volumes:
+  backend_data:

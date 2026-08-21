@@ -1,0 +1,9 @@
+# Copier en "key.properties" (même dossier) et remplir avec le vrai keystore.
+# Générer le keystore :
+#   keytool -genkey -v -keystore deriv-bot-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias deriv_bot
+#
+# key.properties ne doit JAMAIS être commité (voir android/.gitignore).
+storeFile=../deriv-bot-release.jks
+storePassword=CHANGE_ME
+keyAlias=deriv_bot
+keyPassword=CHANGE_ME

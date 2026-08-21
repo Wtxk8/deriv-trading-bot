@@ -1,0 +1,15 @@
+# Backend (Python)
+backend/.env
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.db
+backend/*.sqlite3
+
+# Mobile (Flutter)
+mobile/build/
+mobile/.dart_tool/
+mobile/android/key.properties
+mobile/android/*.jks
+mobile/android/*.keystore
