@@ -37,6 +37,7 @@ class BotState(str, Enum):
 class StrategyType(str, Enum):
     RISE_FALL = "RISE_FALL"
     OVER_UNDER = "OVER_UNDER"
+    MARTINGALE = "MARTINGALE"  # Rise/Fall + doublement de mise après perte
 
 
 # États terminaux : la boucle ne doit plus ouvrir de nouveau trade.
@@ -149,6 +150,12 @@ class BotEngine:
         self._pip_size: int = 2
         self._trades: deque[TradeRecord] = deque(maxlen=max_history)
 
+        # État Martingale : mise en cours (doublée après chaque perte, reset après gain).
+        self._base_stake: float = 0.0
+        self._current_stake: float = 0.0
+        self._martingale_factor: float = 2.0
+        self._martingale_max_stake: float = 128.0
+
         # Synchronisation du règlement de contrat.
         self._current_contract_id: int = 0
         self._settlement: Optional[asyncio.Future[dict[str, Any]]] = None
@@ -172,6 +179,8 @@ class BotEngine:
 
             self._symbol = symbol
             self._stake = float(stake)
+            self._base_stake = float(stake)
+            self._current_stake = float(stake)
             self._strategy = StrategyType(strategy_type)
             self._risk = RiskManager(
                 stop_loss=abs(float(stop_loss)),
@@ -306,9 +315,11 @@ class BotEngine:
     # ------------------------------------------------------------------
     def _decide(self) -> Optional[tuple[str, Optional[str]]]:
         """Retourne (contract_type, barrier) ou None si pas de signal."""
-        if self._strategy == StrategyType.RISE_FALL:
-            return self._decide_rise_fall()
-        return self._decide_over_under()
+        if self._strategy == StrategyType.OVER_UNDER:
+            return self._decide_over_under()
+        # RISE_FALL et MARTINGALE partagent la même décision directionnelle ;
+        # seule la mise diffère (voir _update_stake_after_trade).
+        return self._decide_rise_fall()
 
     def _decide_rise_fall(self) -> Optional[tuple[str, Optional[str]]]:
         quotes = list(self._ticks)
@@ -352,13 +363,13 @@ class BotEngine:
             buy = await self._client.buy_proposal(
                 contract_type=contract_type,
                 symbol=self._symbol,
-                amount=self._stake,
+                amount=self._current_stake,
                 duration=self._trade_duration,
                 duration_unit="t",
                 basis="stake",
                 currency=self._currency,
                 barrier=barrier,
-                max_price=self._stake,  # basis=stake => ask_price == stake
+                max_price=self._current_stake,  # basis=stake => ask_price == stake
             )
         except DerivError as exc:
             logger.warning("Achat refusé (%s), trade ignoré", exc)
@@ -367,7 +378,7 @@ class BotEngine:
 
         contract_id = int(buy["contract_id"])
         self._current_contract_id = contract_id
-        buy_price = float(buy.get("buy_price", self._stake))
+        buy_price = float(buy.get("buy_price", self._current_stake))
 
         await self._client.proposal_open_contract(contract_id, subscribe=True)
 
@@ -404,12 +415,27 @@ class BotEngine:
             timestamp=time.time(),
         )
         self._trades.append(record)
+        self._update_stake_after_trade(profit >= 0)
         logger.info(
-            "Trade réglé: %s profit=%.2f PnL=%.2f",
+            "Trade réglé: %s profit=%.2f PnL=%.2f next_stake=%.2f",
             record.contract_type,
             profit,
             self._risk.pnl,
+            self._current_stake,
         )
+
+    def _update_stake_after_trade(self, won: bool) -> None:
+        """Ajuste la mise du prochain trade selon la stratégie."""
+        if self._strategy != StrategyType.MARTINGALE:
+            self._current_stake = self._base_stake
+            return
+        if won:
+            # Reset : gain → on repart de la mise de base.
+            self._current_stake = self._base_stake
+        else:
+            # Doublement, avec plafond dur pour éviter la ruine sur série longue.
+            doubled = self._current_stake * self._martingale_factor
+            self._current_stake = min(doubled, self._martingale_max_stake)
 
     # ------------------------------------------------------------------
     # Callbacks de flux

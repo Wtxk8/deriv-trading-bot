@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from pathlib import Path
@@ -27,11 +29,13 @@ from sqlalchemy.orm import Session
 
 import auth
 import models
+import payments as pay
 import schemas
 from bot_engine import BotEngine, StrategyType
 from deriv_client import DerivError
 from database import SessionLocal, get_db
 from database import engine as db_engine
+from fastapi import Request
 
 load_dotenv()
 
@@ -57,7 +61,8 @@ class StartBotRequest(BaseModel):
     stake: float = Field(..., gt=0, description="Mise par trade")
     stop_loss: float = Field(..., gt=0, description="Perte journalière max (abs)")
     take_profit: float = Field(..., gt=0, description="Gain journalier cible (abs)")
-    strategy_type: str = Field("RISE_FALL", description="RISE_FALL | OVER_UNDER")
+    strategy_type: str = Field("RISE_FALL", description="RISE_FALL | OVER_UNDER | MARTINGALE")
+    account_type: str = Field("demo", description="demo | real — gate premium sur real")
 
 
 class ActionResponse(BaseModel):
@@ -96,17 +101,59 @@ app.add_middleware(
 )
 
 
+def _require_premium_if_real(
+    req: "StartBotRequest",
+    user: models.User | None,
+) -> None:
+    """Bloque le démarrage sur compte réel si l'utilisateur n'est pas premium.
+
+    Modèle : sur compte démo, tout le monde peut essayer gratuitement.
+    Sur compte réel, il faut un abonnement premium actif.
+    """
+    if not (req.account_type or "").lower().startswith("real"):
+        return
+    if user is None:
+        raise HTTPException(
+            status_code=402,
+            detail="Compte réel : connexion + abonnement premium requis.",
+        )
+    if user.role == "admin":
+        return
+    if not pay.is_premium_active(user.subscription_tier, user.subscription_expires_at):
+        raise HTTPException(
+            status_code=402,
+            detail="Abonnement premium requis pour trader en compte réel.",
+        )
+
+
 # ----------------------------------------------------------------------
 # Endpoints REST
 # ----------------------------------------------------------------------
 @app.post("/api/bot/start", response_model=ActionResponse)
-async def start_bot(req: StartBotRequest) -> ActionResponse:
+async def start_bot(
+    req: StartBotRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ActionResponse:
     try:
         strategy = StrategyType(req.strategy_type)
     except ValueError as exc:
         raise HTTPException(
             status_code=422, detail=f"strategy_type invalide: {req.strategy_type}"
         ) from exc
+
+    # Gate abonnement : compte réel Deriv → premium requis (démo reste libre).
+    current_user: models.User | None = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        try:
+            payload = auth.decode_access_token(auth_header[7:])
+            sub = payload.get("sub")
+            if sub is not None:
+                current_user = db.get(models.User, int(sub))
+        except HTTPException:
+            current_user = None
+    _require_premium_if_real(req, current_user)
 
     try:
         await engine.start(
@@ -253,6 +300,128 @@ def delete_user(
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
     db.delete(user)
     db.commit()
+
+
+# ----------------------------------------------------------------------
+# Abonnements & paiements Mobile Money
+# ----------------------------------------------------------------------
+@app.get("/billing/plans")
+def billing_plans() -> dict[str, Any]:
+    return {"plans": pay.PLANS}
+
+
+@app.post("/billing/checkout", response_model=schemas.PaymentOut)
+async def billing_checkout(
+    payload: schemas.PaymentInit,
+    user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.PaymentOut:
+    try:
+        plan = pay.resolve_plan(payload.plan)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=f"Plan inconnu: {payload.plan}") from exc
+
+    try:
+        provider = pay.get_provider(payload.provider)
+    except pay.PaymentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    base_url = os.environ.get("PUBLIC_BASE_URL", "https://api1.innovahub226.com")
+    p = models.Payment(
+        user_id=user.id,
+        provider=provider.name,
+        provider_ref="",
+        amount_xof=int(plan["amount_xof"]),
+        plan=payload.plan,
+        status="pending",
+    )
+    db.add(p)
+    db.flush()
+
+    try:
+        ref, checkout_url = await provider.create_checkout(
+            amount_xof=int(plan["amount_xof"]),
+            description=f"Deriv Trading Bot — {plan['label']}",
+            callback_url=f"{base_url}/billing/webhook?payment_id={p.id}",
+            customer_email=user.email,
+            customer_phone=payload.phone,
+        )
+    except pay.PaymentError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    p.provider_ref = ref
+    db.commit()
+    db.refresh(p)
+
+    out = schemas.PaymentOut.model_validate(p)
+    return out.model_copy(update={"checkout_url": checkout_url})
+
+
+@app.post("/billing/webhook", include_in_schema=False)
+async def billing_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    # Récupère le payment_id ciblé (posé dans le callback_url à la création).
+    payment_id = request.query_params.get("payment_id")
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="payment_id manquant")
+    payment = db.get(models.Payment, int(payment_id))
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Paiement introuvable")
+
+    raw = await request.body()
+    try:
+        provider = pay.get_provider(payment.provider)
+        provider.verify_webhook({k.lower(): v for k, v in request.headers.items()}, raw)
+    except pay.PaymentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payment.status == "paid":
+        return {"status": "already_paid"}
+
+    plan = pay.resolve_plan(payment.plan)
+    user = db.get(models.User, payment.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    payment.status = "paid"
+    payment.paid_at = datetime.now(timezone.utc)
+    user.subscription_tier = "premium"
+    user.subscription_expires_at = pay.extend_subscription(
+        user.subscription_expires_at, int(plan["duration_days"])
+    )
+    db.commit()
+    return {"status": "activated"}
+
+
+@app.get("/billing/dev-pay", include_in_schema=False)
+async def billing_dev_pay(ref: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Endpoint de dev (provider `manual`) : confirme un paiement sans passerelle."""
+    payment = db.query(models.Payment).filter(models.Payment.provider_ref == ref).first()
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Paiement introuvable")
+    if payment.status == "paid":
+        return {"status": "already_paid"}
+    plan = pay.resolve_plan(payment.plan)
+    user = db.get(models.User, payment.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    payment.status = "paid"
+    payment.paid_at = datetime.now(timezone.utc)
+    user.subscription_tier = "premium"
+    user.subscription_expires_at = pay.extend_subscription(
+        user.subscription_expires_at, int(plan["duration_days"])
+    )
+    db.commit()
+    return {"status": "activated", "plan": payment.plan}
+
+
+# ----------------------------------------------------------------------
+# Affiliation Deriv (IB)
+# ----------------------------------------------------------------------
+@app.get("/affiliate/deriv")
+def affiliate_deriv_url() -> dict[str, str]:
+    """URL de sign-up Deriv avec le token d'affiliation IB de l'app."""
+    return {"url": pay.deriv_signup_url()}
 
 
 # ----------------------------------------------------------------------

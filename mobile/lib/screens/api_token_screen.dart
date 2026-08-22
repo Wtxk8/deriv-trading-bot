@@ -1,10 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/bot_provider.dart';
+import '../services/bot_service.dart';
 import '../theme/app_theme.dart';
 import 'dashboard_screen.dart';
+
+/// URL de sign-up Deriv récupérée dynamiquement du backend (token d'affiliation IB).
+Future<void> _openDerivSignup(BotService service) async {
+  try {
+    final url = await service.getDerivSignupUrl();
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      throw Exception('Impossible d\'ouvrir le navigateur');
+    }
+  } catch (_) {
+    // Fallback : URL directe Deriv sans affiliation.
+    await launchUrl(Uri.parse('https://deriv.com/signup/'), mode: LaunchMode.externalApplication);
+  }
+}
 
 /// Saisie et stockage sécurisé du token API Deriv (design dark premium).
 class ApiTokenScreen extends ConsumerStatefulWidget {
@@ -183,11 +199,28 @@ class _ApiTokenScreenState extends ConsumerState<ApiTokenScreen> {
                 ),
               ),
               const Spacer(),
-              // CTA
+              // CTA principal
               _PrimaryButton(
                 label: 'Enregistrer & connecter',
                 busy: _saving,
                 onPressed: _saving ? null : _save,
+              ),
+              const SizedBox(height: 12),
+              // Bouton affiliation Deriv (business model IB)
+              TextButton(
+                onPressed: () => _openDerivSignup(ref.read(botServiceProvider)),
+                child: Text.rich(
+                  TextSpan(
+                    text: 'Pas encore de compte Deriv ? ',
+                    style: GoogleFonts.manrope(fontSize: 13, color: AppColors.textTertiary),
+                    children: [
+                      TextSpan(
+                        text: 'Créer un compte',
+                        style: GoogleFonts.manrope(fontSize: 13, color: AppColors.primarySoft, fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),

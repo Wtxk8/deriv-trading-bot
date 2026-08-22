@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -26,6 +27,27 @@ class UserOut(BaseModel):
     email: str
     role: str
     active: bool
+    subscription_tier: str = "free"
+    subscription_expires_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class PaymentInit(BaseModel):
+    plan: str  # premium_monthly | premium_yearly
+    provider: str = "fedapay"  # fedapay | cinetpay
+    phone: Optional[str] = None  # numéro Mobile Money
+
+
+class PaymentOut(BaseModel):
+    id: int
+    plan: str
+    provider: str
+    provider_ref: str
+    amount_xof: int
+    status: str
+    created_at: datetime
+    checkout_url: Optional[str] = None  # renvoyé pour rediriger l'utilisateur
 
     model_config = {"from_attributes": True}
 

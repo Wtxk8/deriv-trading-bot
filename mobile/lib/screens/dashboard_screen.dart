@@ -21,7 +21,7 @@ class DashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
-  static const List<String> _strategies = ['RISE_FALL', 'OVER_UNDER'];
+  static const List<String> _strategies = ['RISE_FALL', 'OVER_UNDER', 'MARTINGALE'];
   static const Set<String> _activeStates = {'RUNNING', 'PAUSED'};
 
   String _symbol = 'R_100';
@@ -539,7 +539,12 @@ class _StrategyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = strategy == 'RISE_FALL' ? 'Rise / Fall' : 'Over / Under';
+    final label = switch (strategy) {
+      'RISE_FALL' => 'Rise / Fall',
+      'OVER_UNDER' => 'Over / Under',
+      'MARTINGALE' => 'Martingale',
+      _ => strategy,
+    };
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(AppRadii.lg + 2),
@@ -789,7 +794,9 @@ class _ConfigSheet extends StatefulWidget {
 }
 
 class _ConfigSheetState extends State<_ConfigSheet> {
-  static const List<String> _symbols = ['R_10', 'R_25', 'R_50', 'R_100'];
+  static const List<String> _symbols = [
+    'R_10', 'R_25', 'R_50', 'R_75', 'R_100', 'BOOM500', 'CRASH500'
+  ];
 
   late String _symbol = widget.symbol;
   late String _strategy = widget.strategy;
@@ -932,9 +939,24 @@ class _ConfigSheetState extends State<_ConfigSheet> {
   }
 
   Widget _strategyRow(String value, {required bool selected, required VoidCallback onTap}) {
-    final label = value == 'RISE_FALL' ? 'Rise / Fall' : 'Over / Under';
-    final desc = value == 'RISE_FALL' ? 'Direction du prochain tick' : 'Seuil sur le dernier chiffre';
-    final risk = value == 'RISE_FALL' ? 'Risque modéré' : 'Risque élevé';
+    final label = switch (value) {
+      'RISE_FALL' => 'Rise / Fall',
+      'OVER_UNDER' => 'Over / Under',
+      'MARTINGALE' => 'Martingale',
+      _ => value,
+    };
+    final desc = switch (value) {
+      'RISE_FALL' => 'Direction du prochain tick',
+      'OVER_UNDER' => 'Seuil sur le dernier chiffre',
+      'MARTINGALE' => 'Doublement de mise après une perte',
+      _ => '',
+    };
+    final risk = switch (value) {
+      'RISE_FALL' => 'Risque modéré',
+      'OVER_UNDER' => 'Risque élevé',
+      'MARTINGALE' => 'Risque très élevé',
+      _ => '',
+    };
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: InkWell(

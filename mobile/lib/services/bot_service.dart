@@ -51,6 +51,19 @@ class BotService {
     return _decode(response);
   }
 
+  /// URL d'inscription Deriv avec le token d'affiliation IB (partenariat).
+  Future<String> getDerivSignupUrl() async {
+    final response = await http
+        .get(_http('/affiliate/deriv'), headers: _jsonHeaders)
+        .timeout(const Duration(seconds: 10));
+    final body = _decode(response);
+    final url = body['url'] as String?;
+    if (url == null || url.isEmpty) {
+      throw BotServiceException(500, 'URL affiliation vide');
+    }
+    return url;
+  }
+
   Future<Map<String, dynamic>> getStatus() async {
     final response = await http
         .get(_http('/api/bot/status'), headers: _jsonHeaders)
