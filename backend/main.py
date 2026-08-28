@@ -75,30 +75,49 @@ class ActionResponse(BaseModel):
 # ----------------------------------------------------------------------
 # Lifecycle
 # ----------------------------------------------------------------------
-def _ensure_trial_column() -> None:
-    """Ajoute la colonne trial_started_at si elle manque (migration SQLite in-place).
+def _ensure_migrations() -> None:
+    """Ajoute les colonnes business-model manquantes (migration SQLite in-place).
 
-    SQLite ne permet pas ADD COLUMN avec DEFAULT CURRENT_TIMESTAMP (non-constant),
-    on ajoute donc la colonne nullable puis on backfill via UPDATE.
+    SQLite refuse ADD COLUMN avec DEFAULT non-constant : on ajoute la colonne
+    nullable puis on remplit via UPDATE si nécessaire.
     """
     with db_engine.begin() as conn:
         try:
             cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
         except Exception:  # noqa: BLE001
             return
+
+        # subscription_tier : NOT NULL avec default 'free'
+        if "subscription_tier" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN subscription_tier VARCHAR(20) NOT NULL DEFAULT 'free'"
+            ))
+            logger.info("Migration : users.subscription_tier ajoutée")
+
+        if "subscription_expires_at" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN subscription_expires_at TIMESTAMP"))
+            logger.info("Migration : users.subscription_expires_at ajoutée")
+
+        if "referred_by_user_id" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN referred_by_user_id INTEGER"))
+            logger.info("Migration : users.referred_by_user_id ajoutée")
+
         if "trial_started_at" not in cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN trial_started_at TIMESTAMP"))
             conn.execute(text(
                 "UPDATE users SET trial_started_at = CURRENT_TIMESTAMP WHERE trial_started_at IS NULL"
             ))
-            logger.info("Migration OK : users.trial_started_at ajoutée + backfill")
+            logger.info("Migration : users.trial_started_at ajoutée + backfill")
+
+        # Table payments : SQLAlchemy create_all l'aura créée si absente ;
+        # on ne fait rien de plus ici.
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Démarrage serveur")
     models.Base.metadata.create_all(bind=db_engine)
-    _ensure_trial_column()
+    _ensure_migrations()
     with SessionLocal() as db:
         auth.ensure_default_admin(db)
     try:
