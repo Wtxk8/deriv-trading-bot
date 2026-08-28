@@ -76,18 +76,18 @@ class ActionResponse(BaseModel):
 # Lifecycle
 # ----------------------------------------------------------------------
 def _ensure_trial_column() -> None:
-    """Ajoute la colonne trial_started_at si elle manque (migration SQLite in-place)."""
+    """Ajoute la colonne trial_started_at si elle manque (migration SQLite in-place).
+
+    SQLite ne permet pas ADD COLUMN avec DEFAULT CURRENT_TIMESTAMP (non-constant),
+    on ajoute donc la colonne nullable puis on backfill via UPDATE.
+    """
     with db_engine.begin() as conn:
-        # SQLite : PRAGMA table_info retourne les colonnes existantes.
         try:
             cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
         except Exception:  # noqa: BLE001
             return
         if "trial_started_at" not in cols:
-            conn.execute(text(
-                "ALTER TABLE users ADD COLUMN trial_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-            ))
-            # Backfill : les users existants démarrent leur essai maintenant.
+            conn.execute(text("ALTER TABLE users ADD COLUMN trial_started_at TIMESTAMP"))
             conn.execute(text(
                 "UPDATE users SET trial_started_at = CURRENT_TIMESTAMP WHERE trial_started_at IS NULL"
             ))
