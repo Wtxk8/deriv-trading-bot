@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/billing_provider.dart';
 import '../providers/bot_provider.dart';
 import '../services/bot_service.dart';
 import '../theme/app_theme.dart';
@@ -10,6 +11,7 @@ import '../widgets/brand_logo.dart';
 import 'admin_user_management_screen.dart';
 import 'api_token_screen.dart';
 import 'login_screen.dart';
+import 'premium_screen.dart';
 import 'require_admin.dart';
 
 /// Écran principal : header, PnL card, garde-fous, stratégie, trades, CTA.
@@ -29,6 +31,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   double _stopLoss = 10.0;
   double _takeProfit = 20.0;
   String _strategy = 'RISE_FALL';
+  String _accountType = 'demo'; // demo | real
   bool _busy = false;
 
   BotService get _service => ref.read(botServiceProvider);
@@ -42,6 +45,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     }
     setState(() => _busy = true);
     try {
+      final jwt = ref.read(jwtProvider);
       await _service.startBot(
         token: token,
         symbol: _symbol,
@@ -49,15 +53,26 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         stopLoss: _stopLoss,
         takeProfit: _takeProfit,
         strategy: _strategy,
+        accountType: _accountType,
+        jwt: jwt,
       );
       _snack('Robot démarré sur $_symbol');
     } on BotServiceException catch (e) {
-      _snack(e.toString());
+      if (e.statusCode == 402) {
+        _openPremium(reason: e.detail);
+      } else {
+        _snack(e.toString());
+      }
     } catch (e) {
       _snack('Échec : $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _openPremium({String? reason}) {
+    if (reason != null && reason.isNotEmpty) _snack(reason);
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PremiumScreen()));
   }
 
   Future<void> _stop() async {
@@ -176,6 +191,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
                   children: [
+                    _SubscriptionBanner(
+                      isLoggedIn: isLoggedIn,
+                      onLogin: _openLogin,
+                      onOpenPremium: () => _openPremium(),
+                    ),
+                    const SizedBox(height: 14),
+                    _AccountTypeSwitch(
+                      value: _accountType,
+                      onChanged: (v) => setState(() => _accountType = v),
+                    ),
+                    const SizedBox(height: 14),
                     _PnlCard(
                       pnl: pnl,
                       balance: balance,
@@ -1059,6 +1085,173 @@ class _ConfigSheetState extends State<_ConfigSheet> {
         height: 32,
         child: Center(
           child: Text(label, style: GoogleFonts.manrope(fontSize: 17, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Bandeau affichant l'état de l'essai / du premium avec CTA vers l'écran Premium.
+class _SubscriptionBanner extends ConsumerWidget {
+  const _SubscriptionBanner({
+    required this.isLoggedIn,
+    required this.onLogin,
+    required this.onOpenPremium,
+  });
+
+  final bool isLoggedIn;
+  final VoidCallback onLogin;
+  final VoidCallback onOpenPremium;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final statusAsync = ref.watch(subscriptionStatusProvider);
+    if (!isLoggedIn) {
+      return _pill(
+        icon: Icons.person_outline,
+        color: AppColors.textTertiary,
+        title: 'Non connecté',
+        subtitle: 'Compte requis pour l\'essai gratuit et le premium',
+        cta: 'Se connecter',
+        onTap: onLogin,
+      );
+    }
+    return statusAsync.when(
+      data: (s) {
+        if (s == null) return const SizedBox.shrink();
+        if (s.premiumActive) {
+          return _pill(
+            icon: Icons.workspace_premium_rounded,
+            color: AppColors.success,
+            title: 'Premium actif',
+            subtitle: s.premiumExpiresAt == null
+                ? 'Accès illimité'
+                : 'Jusqu\'au ${_fmtDate(s.premiumExpiresAt!)}',
+          );
+        }
+        if (s.trialActive) {
+          return _pill(
+            icon: Icons.timer_outlined,
+            color: AppColors.primarySoft,
+            title: 'Essai gratuit — ${s.trialDaysRemaining} jour${s.trialDaysRemaining > 1 ? "s" : ""} restant',
+            subtitle: 'Après cette période, passez au premium pour le compte réel.',
+            cta: 'Voir les formules',
+            onTap: onOpenPremium,
+          );
+        }
+        return _pill(
+          icon: Icons.lock_outline_rounded,
+          color: AppColors.danger,
+          title: 'Essai terminé',
+          subtitle: 'Passez au premium pour trader en compte réel.',
+          cta: 'Passer au premium',
+          onTap: onOpenPremium,
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (_, __) => const SizedBox.shrink(),
+    );
+  }
+
+  Widget _pill({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    String? cta,
+    VoidCallback? onTap,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppRadii.md + 2),
+        border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(title, style: GoogleFonts.manrope(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.textPrimary)),
+                const SizedBox(height: 2),
+                Text(subtitle, style: GoogleFonts.manrope(fontSize: 11.5, color: AppColors.textTertiary, height: 1.35)),
+              ],
+            ),
+          ),
+          if (cta != null && onTap != null)
+            TextButton(
+              onPressed: onTap,
+              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+              child: Text(cta,
+                  style: GoogleFonts.manrope(fontSize: 12, fontWeight: FontWeight.w800, color: color)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _fmtDate(DateTime dt) {
+    final l = dt.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(l.day)}/${two(l.month)}/${l.year}';
+  }
+}
+
+/// Switch segmenté demo / real.
+class _AccountTypeSwitch extends StatelessWidget {
+  const _AccountTypeSwitch({required this.value, required this.onChanged});
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadii.md + 2),
+        border: Border.all(color: AppColors.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          _seg('demo', 'Démo', AppColors.success),
+          _seg('real', 'Réel', AppColors.warning),
+        ],
+      ),
+    );
+  }
+
+  Widget _seg(String key, String label, Color activeColor) {
+    final selected = value == key;
+    return Expanded(
+      child: InkWell(
+        onTap: () => onChanged(key),
+        borderRadius: BorderRadius.circular(AppRadii.md - 2),
+        child: Container(
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? activeColor.withValues(alpha: 0.16) : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppRadii.md - 2),
+            border: Border.all(
+              color: selected ? activeColor.withValues(alpha: 0.5) : Colors.transparent,
+              width: 1,
+            ),
+          ),
+          child: Text(
+            label,
+            style: GoogleFonts.manrope(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w800,
+              color: selected ? activeColor : AppColors.textTertiary,
+              letterSpacing: 0.4,
+            ),
+          ),
         ),
       ),
     );

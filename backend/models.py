@@ -24,6 +24,11 @@ class User(Base):
     subscription_tier: Mapped[str] = mapped_column(String(20), default="free", nullable=False)  # free | premium
     subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- Essai gratuit 7 jours (démarré à l'inscription) ---
+    trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=True
+    )
+
     # --- Affiliation Deriv (IB) : chaque user peut avoir été référé par un autre ---
     referred_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

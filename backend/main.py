@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import auth
@@ -74,10 +75,30 @@ class ActionResponse(BaseModel):
 # ----------------------------------------------------------------------
 # Lifecycle
 # ----------------------------------------------------------------------
+def _ensure_trial_column() -> None:
+    """Ajoute la colonne trial_started_at si elle manque (migration SQLite in-place)."""
+    with db_engine.begin() as conn:
+        # SQLite : PRAGMA table_info retourne les colonnes existantes.
+        try:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
+        except Exception:  # noqa: BLE001
+            return
+        if "trial_started_at" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN trial_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ))
+            # Backfill : les users existants démarrent leur essai maintenant.
+            conn.execute(text(
+                "UPDATE users SET trial_started_at = CURRENT_TIMESTAMP WHERE trial_started_at IS NULL"
+            ))
+            logger.info("Migration OK : users.trial_started_at ajoutée + backfill")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Démarrage serveur")
     models.Base.metadata.create_all(bind=db_engine)
+    _ensure_trial_column()
     with SessionLocal() as db:
         auth.ensure_default_admin(db)
     try:
@@ -105,10 +126,11 @@ def _require_premium_if_real(
     req: "StartBotRequest",
     user: models.User | None,
 ) -> None:
-    """Bloque le démarrage sur compte réel si l'utilisateur n'est pas premium.
+    """Bloque le démarrage sur compte réel si l'utilisateur n'a ni essai ni premium.
 
-    Modèle : sur compte démo, tout le monde peut essayer gratuitement.
-    Sur compte réel, il faut un abonnement premium actif.
+    Modèle :
+    - Démo : libre pour tous.
+    - Réel : essai gratuit 7 jours à l'inscription, puis abonnement premium requis.
     """
     if not (req.account_type or "").lower().startswith("real"):
         return
@@ -119,11 +141,14 @@ def _require_premium_if_real(
         )
     if user.role == "admin":
         return
-    if not pay.is_premium_active(user.subscription_tier, user.subscription_expires_at):
-        raise HTTPException(
-            status_code=402,
-            detail="Abonnement premium requis pour trader en compte réel.",
-        )
+    if pay.can_trade_real(
+        user.subscription_tier, user.subscription_expires_at, user.trial_started_at
+    ):
+        return
+    raise HTTPException(
+        status_code=402,
+        detail="Votre essai gratuit de 7 jours est terminé. Passez au premium pour continuer à trader en compte réel.",
+    )
 
 
 # ----------------------------------------------------------------------
@@ -228,6 +253,7 @@ def register(payload: schemas.UserCreate, db: Session = Depends(get_db)) -> mode
         hashed_password=auth.hash_password(payload.password),
         role="user",
         active=True,
+        trial_started_at=datetime.now(timezone.utc),
     )
     db.add(user)
     db.commit()
@@ -308,6 +334,29 @@ def delete_user(
 @app.get("/billing/plans")
 def billing_plans() -> dict[str, Any]:
     return {"plans": pay.PLANS}
+
+
+@app.get("/billing/status", response_model=schemas.SubscriptionStatus)
+def billing_status(
+    user: models.User = Depends(auth.get_current_user),
+) -> schemas.SubscriptionStatus:
+    """Retourne l'état d'abonnement + essai gratuit de l'utilisateur courant."""
+    premium_active = pay.is_premium_active(user.subscription_tier, user.subscription_expires_at)
+    trial_active = pay.is_trial_active(user.trial_started_at)
+    trial_end = pay.trial_expires_at(user.trial_started_at)
+    days_remaining = 0
+    if trial_end is not None:
+        delta = trial_end - datetime.now(timezone.utc)
+        days_remaining = max(0, delta.days + (1 if delta.seconds > 0 else 0))
+    return schemas.SubscriptionStatus(
+        tier=user.subscription_tier,
+        premium_active=premium_active,
+        premium_expires_at=user.subscription_expires_at,
+        trial_active=trial_active,
+        trial_expires_at=trial_end,
+        trial_days_remaining=days_remaining if trial_active else 0,
+        can_trade_real=premium_active or trial_active or user.role == "admin",
+    )
 
 
 @app.post("/billing/checkout", response_model=schemas.PaymentOut)

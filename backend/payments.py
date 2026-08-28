@@ -182,6 +182,36 @@ def is_premium_active(user_tier: str, expires_at: datetime | None) -> bool:
     return now < expires_at
 
 
+# ----- Essai gratuit 7 jours -----
+TRIAL_DURATION_DAYS: int = 7
+
+
+def trial_expires_at(trial_started_at: datetime | None) -> datetime | None:
+    """Retourne la date de fin d'essai (start + 7 jours) ou None si pas de start."""
+    if trial_started_at is None:
+        return None
+    if trial_started_at.tzinfo is None:
+        trial_started_at = trial_started_at.replace(tzinfo=timezone.utc)
+    return trial_started_at + timedelta(days=TRIAL_DURATION_DAYS)
+
+
+def is_trial_active(trial_started_at: datetime | None) -> bool:
+    """True si l'utilisateur est encore dans sa fenêtre d'essai de 7 jours."""
+    end = trial_expires_at(trial_started_at)
+    if end is None:
+        return False
+    return datetime.now(timezone.utc) < end
+
+
+def can_trade_real(
+    user_tier: str,
+    expires_at: datetime | None,
+    trial_started_at: datetime | None,
+) -> bool:
+    """True si l'utilisateur peut trader en compte réel (essai actif ou premium actif)."""
+    return is_premium_active(user_tier, expires_at) or is_trial_active(trial_started_at)
+
+
 def extend_subscription(current_expires_at: datetime | None, duration_days: int) -> datetime:
     """Calcule la nouvelle date d'expiration après paiement."""
     now = datetime.now(timezone.utc)

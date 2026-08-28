@@ -29,8 +29,19 @@ class UserOut(BaseModel):
     active: bool
     subscription_tier: str = "free"
     subscription_expires_at: Optional[datetime] = None
+    trial_started_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+class SubscriptionStatus(BaseModel):
+    tier: str  # free | premium
+    premium_active: bool
+    premium_expires_at: Optional[datetime] = None
+    trial_active: bool
+    trial_expires_at: Optional[datetime] = None
+    trial_days_remaining: int = 0
+    can_trade_real: bool
 
 
 class PaymentInit(BaseModel):

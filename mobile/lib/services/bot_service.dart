@@ -26,11 +26,17 @@ class BotService {
     required double stopLoss,
     required double takeProfit,
     required String strategy,
+    String accountType = 'demo',
+    String? jwt,
   }) async {
+    final headers = Map<String, String>.from(_jsonHeaders);
+    if (jwt != null && jwt.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $jwt';
+    }
     final response = await http
         .post(
           _http('/api/bot/start'),
-          headers: _jsonHeaders,
+          headers: headers,
           body: jsonEncode(<String, dynamic>{
             'api_token': token,
             'symbol': symbol,
@@ -38,6 +44,7 @@ class BotService {
             'stop_loss': stopLoss,
             'take_profit': takeProfit,
             'strategy_type': strategy,
+            'account_type': accountType,
           }),
         )
         .timeout(const Duration(seconds: 20));
