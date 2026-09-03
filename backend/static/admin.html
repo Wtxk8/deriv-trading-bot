@@ -13,13 +13,13 @@
   --border: rgba(255,255,255,.08); --border-soft: rgba(255,255,255,.06);
   --fg: #E8EDF4; --fg-2: #9AA6B6; --fg-3: #7C8899;
   --primary: #6C7BFF; --primary-deep: #4D59E0; --primary-soft: #8B9BFF;
-  --success: #3ED598; --danger: #FF5C7A; --warning: #FFB247;
+  --success: #3ED598; --danger: #FF5C7A; --warning: #FFB247; --gold: #F5C868;
 }
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: Manrope, system-ui, sans-serif; -webkit-font-smoothing: antialiased }
 .mono { font-family: 'JetBrains Mono', ui-monospace, monospace }
 button { font-family: inherit; cursor: pointer }
-input { font-family: inherit }
+input, select { font-family: inherit }
 .hidden { display: none !important }
 
 /* Login */
@@ -43,51 +43,93 @@ input { font-family: inherit }
 .shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr }
 .topbar { display: flex; align-items: center; gap: 14px; padding: 14px 24px; border-bottom: 1px solid var(--border) }
 .chip { padding: 6px 10px; border-radius: 999px; background: rgba(108,123,255,.14); color: var(--primary-soft); font-size: 11.5px; font-weight: 700; font-family: 'JetBrains Mono', monospace }
-.icon-btn { width: 34px; height: 34px; border-radius: 10px; background: var(--surface-alt); border: 1px solid var(--border); color: var(--fg-3); display: grid; place-items: center }
+.icon-btn { width: 34px; height: 34px; border-radius: 10px; background: var(--surface-alt); border: 1px solid var(--border); color: var(--fg-3); display: grid; place-items: center; font-size: 15px }
 .icon-btn:hover { color: var(--fg); background: #171E27 }
-.main { padding: 24px 24px 48px; max-width: 1180px; margin: 0 auto; width: 100% }
+.main { padding: 24px 24px 48px; max-width: 1240px; margin: 0 auto; width: 100% }
 .section-title { font-size: 22px; font-weight: 800; letter-spacing: -.5px; margin: 0 0 6px }
 .section-hint { color: var(--fg-3); font-size: 13.5px; margin: 0 0 20px }
 
 .toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap }
 .search { flex: 1; min-width: 240px; height: 44px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; padding: 0 14px; color: var(--fg); font-size: 14px }
 .search:focus { outline: none; border-color: var(--primary) }
-.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px }
-.stat { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px }
+.filter-select { height: 44px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px; padding: 0 14px; color: var(--fg); font-size: 13px; font-weight: 600 }
+
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px }
+.stat { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px }
 .stat-label { font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--fg-3) }
 .stat-value { margin-top: 6px; font-size: 22px; font-weight: 800; letter-spacing: -.5px; font-family: 'JetBrains Mono', monospace }
 .stat-value.success { color: var(--success) }
 .stat-value.warn { color: var(--warning) }
+.stat-value.gold { color: var(--gold) }
+.stat-value.primary { color: var(--primary-soft) }
+.stat-sub { color: var(--fg-3); font-size: 11px; margin-top: 4px; font-weight: 600 }
 
 .users-list { display: flex; flex-direction: column; gap: 10px }
 .user-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; flex-wrap: wrap }
 .avatar { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(145deg, var(--primary), #3b46b8); display: grid; place-items: center; font-weight: 800; color: #fff; font-size: 15px; flex: none }
-.user-main { flex: 1; min-width: 0 }
+.user-main { flex: 1; min-width: 200px }
 .user-name { font-size: 14px; font-weight: 700 }
 .user-email { color: var(--fg-3); font-size: 12.5px; margin-top: 2px }
-.badge { padding: 5px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; font-family: 'JetBrains Mono', monospace }
+.user-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px }
+.badge { padding: 4px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: .3px; font-family: 'JetBrains Mono', monospace; white-space: nowrap }
 .badge.admin { background: rgba(108,123,255,.16); color: var(--primary-soft) }
 .badge.user { background: rgba(255,255,255,.06); color: var(--fg-2) }
 .badge.active { background: rgba(62,213,152,.14); color: var(--success) }
 .badge.suspended { background: rgba(255,92,122,.14); color: var(--danger) }
+.badge.premium { background: rgba(245,200,104,.14); color: var(--gold) }
+.badge.trial { background: rgba(108,123,255,.14); color: var(--primary-soft) }
+.badge.expired { background: rgba(255,92,122,.10); color: var(--danger) }
+.badge.free { background: rgba(255,255,255,.05); color: var(--fg-3) }
+
 .actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap }
 .btn-mini { border: 1px solid var(--border); background: var(--surface-alt); color: var(--fg-2); padding: 7px 12px; border-radius: 10px; font-size: 12px; font-weight: 700 }
 .btn-mini:hover { color: var(--fg); background: var(--surface-high) }
 .btn-mini.danger { border-color: rgba(255,92,122,.3); color: var(--danger); background: rgba(255,92,122,.08) }
 .btn-mini.danger:hover { background: rgba(255,92,122,.16) }
+.btn-mini.gold { border-color: rgba(245,200,104,.3); color: var(--gold); background: rgba(245,200,104,.08) }
+.btn-mini.gold:hover { background: rgba(245,200,104,.16) }
+.btn-mini.primary { border-color: rgba(108,123,255,.3); color: var(--primary-soft); background: rgba(108,123,255,.08) }
+.btn-mini.primary:hover { background: rgba(108,123,255,.16) }
+
+/* Menu déroulant d'actions */
+.menu-wrap { position: relative }
+.menu { position: absolute; top: calc(100% + 6px); right: 0; min-width: 220px; background: var(--surface-high); border: 1px solid var(--border); border-radius: 12px; padding: 6px; z-index: 30; box-shadow: 0 22px 48px -18px rgba(0,0,0,.85) }
+.menu button { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: transparent; border: 0; color: var(--fg-2); padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600 }
+.menu button:hover { background: rgba(255,255,255,.05); color: var(--fg) }
+.menu button.danger { color: var(--danger) }
+.menu button.danger:hover { background: rgba(255,92,122,.12) }
+.menu-divider { height: 1px; background: var(--border); margin: 4px 6px }
+
 .empty { padding: 40px; text-align: center; color: var(--fg-3); background: var(--surface); border: 1px dashed rgba(255,255,255,.12); border-radius: 16px }
-.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--surface-high); border: 1px solid var(--border); color: var(--fg); padding: 12px 18px; border-radius: 12px; font-size: 13px; font-weight: 700; box-shadow: 0 18px 40px -14px rgba(0,0,0,.9); z-index: 100 }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--surface-high); border: 1px solid var(--border); color: var(--fg); padding: 12px 18px; border-radius: 12px; font-size: 13px; font-weight: 700; box-shadow: 0 18px 40px -14px rgba(0,0,0,.9); z-index: 100; max-width: 90vw }
 .toast.err { border-color: rgba(255,92,122,.4); color: var(--danger) }
+.toast.ok { border-color: rgba(62,213,152,.4); color: var(--success) }
 
 /* Modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: grid; place-items: center; padding: 20px; z-index: 50 }
-.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; max-width: 420px; width: 100% }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; max-width: 480px; width: 100% }
 .modal h3 { margin: 0 0 8px; font-size: 18px; font-weight: 800 }
-.modal p { color: var(--fg-2); font-size: 13.5px; line-height: 1.5; margin: 0 0 20px }
+.modal p { color: var(--fg-2); font-size: 13.5px; line-height: 1.5; margin: 0 0 16px }
+.modal-input { width: 100%; margin-bottom: 16px }
 .modal-row { display: flex; gap: 10px; justify-content: flex-end }
 .btn-secondary { border: 1px solid var(--border); background: transparent; color: var(--fg-2); padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
 .btn-danger { border: 0; background: var(--danger); color: #fff; padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
 .btn-confirm { border: 0; background: var(--primary); color: #fff; padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 700 }
+.modal-code { display: block; padding: 12px 14px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--gold); word-break: break-all; margin-bottom: 16px }
+.payments-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px }
+.payment-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface-alt); border-radius: 10px; font-size: 12.5px }
+.payment-row .p-plan { flex: 1; font-weight: 700 }
+.payment-row .p-amount { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--gold) }
+.payment-row .p-status { padding: 3px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; font-family: 'JetBrains Mono', monospace }
+.payment-row .p-status.paid { background: rgba(62,213,152,.14); color: var(--success) }
+.payment-row .p-status.pending { background: rgba(255,178,71,.14); color: var(--warning) }
+.payment-row .p-status.failed { background: rgba(255,92,122,.14); color: var(--danger) }
+
+@media (max-width: 640px) {
+  .user-card { flex-direction: column; align-items: stretch }
+  .actions { margin-left: 0 }
+  .menu { left: 0; right: auto }
+}
 </style>
 </head>
 <body>
@@ -122,18 +164,27 @@ input { font-family: inherit }
       <div class="brand-sub">Administration</div>
     </div>
     <span class="chip" id="me-chip"></span>
+    <button class="icon-btn" title="Rafraîchir" onclick="loadAll()">⟳</button>
     <button class="icon-btn" title="Déconnexion" onclick="logout()">↩</button>
   </div>
 
   <div class="main">
-    <div class="section-title">Utilisateurs</div>
-    <div class="section-hint">Gérez rôles, statuts et suppression. Les modifications sont immédiates.</div>
+    <div class="section-title">Tableau de bord</div>
+    <div class="section-hint">Statistiques temps réel · gestion complète des utilisateurs et de leurs abonnements.</div>
 
     <div class="stat-row" id="stats"></div>
 
+    <div class="section-title" style="font-size:17px">Utilisateurs</div>
     <div class="toolbar">
       <input class="search" id="search" type="text" placeholder="Rechercher par nom ou email…" oninput="render()">
-      <button class="btn-mini" onclick="load()">Rafraîchir</button>
+      <select class="filter-select" id="filter" onchange="render()">
+        <option value="all">Tous</option>
+        <option value="admin">Admins</option>
+        <option value="premium">Premium actifs</option>
+        <option value="trial">Essai actif</option>
+        <option value="expired">Essai / premium expirés</option>
+        <option value="suspended">Suspendus</option>
+      </select>
     </div>
 
     <div id="users-list" class="users-list"></div>
@@ -141,12 +192,12 @@ input { font-family: inherit }
 </div>
 
 <!-- Modal -->
-<div id="modal" class="modal-backdrop hidden">
+<div id="modal" class="modal-backdrop hidden" onclick="if(event.target===this) closeModal()">
   <div class="modal">
     <h3 id="modal-title"></h3>
-    <p id="modal-body"></p>
-    <div class="modal-row">
-      <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+    <div id="modal-body"></div>
+    <div class="modal-row" id="modal-row">
+      <button class="btn-secondary" onclick="closeModal()">Fermer</button>
       <button id="modal-confirm" class="btn-confirm">Confirmer</button>
     </div>
   </div>
@@ -157,15 +208,14 @@ input { font-family: inherit }
 <script>
 const API = window.location.origin;
 const TOKEN_KEY = 'admin_jwt';
-let state = { users: [], me: null };
+let state = { users: [], stats: null, me: null };
 
-function toast(msg, err) {
+function toast(msg, kind) {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.classList.remove('hidden', 'err');
-  if (err) t.classList.add('err');
+  t.className = 'toast' + (kind === 'err' ? ' err' : kind === 'ok' ? ' ok' : '');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.add('hidden'), 3200);
+  toast._t = setTimeout(() => t.classList.add('hidden'), 3500);
 }
 function auth() { return localStorage.getItem(TOKEN_KEY); }
 function saveAuth(jwt) { localStorage.setItem(TOKEN_KEY, jwt); }
@@ -182,11 +232,11 @@ async function api(path, opts = {}) {
     },
   });
   if (res.status === 401 || res.status === 403) {
+    const b = await res.json().catch(() => ({}));
     if (opts.method !== 'POST' || !path.startsWith('/login')) {
       clearAuth();
       showLogin();
     }
-    const b = await res.json().catch(() => ({}));
     throw new Error(b.detail || 'Non autorisé');
   }
   if (res.status === 204) return null;
@@ -218,7 +268,7 @@ async function login(e) {
 
 function logout() {
   clearAuth();
-  state = { users: [], me: null };
+  state = { users: [], stats: null, me: null };
   showLogin();
 }
 
@@ -233,44 +283,82 @@ async function afterLogin() {
   document.getElementById('login-view').classList.add('hidden');
   document.getElementById('app-view').classList.remove('hidden');
   document.getElementById('me-chip').textContent = state.me?.email || '';
-  await load();
+  await loadAll();
 }
 
-async function load() {
+async function loadAll() {
   try {
-    state.users = await api('/admin/users');
+    const [users, stats] = await Promise.all([api('/admin/users'), api('/admin/stats')]);
+    state.users = users; state.stats = stats;
     render();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(e.message, 'err'); }
 }
 
-function stats() {
-  const total = state.users.length;
-  const admins = state.users.filter(u => u.role === 'admin').length;
-  const active = state.users.filter(u => u.active).length;
-  const suspended = total - active;
-  return [
-    { label: 'Total', value: total },
-    { label: 'Admins', value: admins, cls: 'success' },
-    { label: 'Actifs', value: active, cls: 'success' },
-    { label: 'Suspendus', value: suspended, cls: suspended ? 'warn' : '' },
+// --- Rendering ---
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+function fmtNumber(n) { return (n || 0).toLocaleString('fr-FR'); }
+function isPremiumActive(u) {
+  if (u.subscription_tier !== 'premium') return false;
+  if (!u.subscription_expires_at) return true;
+  return new Date(u.subscription_expires_at) > new Date();
+}
+function isTrialActive(u) {
+  if (!u.trial_started_at) return false;
+  const end = new Date(new Date(u.trial_started_at).getTime() + 7 * 86400000);
+  return new Date() < end;
+}
+function trialDaysLeft(u) {
+  if (!u.trial_started_at) return 0;
+  const end = new Date(new Date(u.trial_started_at).getTime() + 7 * 86400000);
+  const diff = end - new Date();
+  return Math.max(0, Math.ceil(diff / 86400000));
+}
+
+function renderStats() {
+  const s = state.stats;
+  if (!s) return '';
+  const cards = [
+    { label: 'Utilisateurs', value: fmtNumber(s.users_total), sub: `${s.admins_total} admin(s)`, cls: 'primary' },
+    { label: 'Actifs', value: fmtNumber(s.users_active), sub: `${s.users_suspended} suspendus`, cls: 'success' },
+    { label: 'Essais en cours', value: fmtNumber(s.trial_active), sub: '7 jours gratuits', cls: 'primary' },
+    { label: 'Premium actifs', value: fmtNumber(s.premium_active), sub: `${s.payments_paid} paiements`, cls: 'gold' },
+    { label: 'CA total', value: fmtNumber(s.revenue_xof_total) + ' XOF', sub: 'depuis le lancement', cls: 'gold' },
+    { label: 'CA 30 jours', value: fmtNumber(s.revenue_xof_30d) + ' XOF', sub: 'glissants', cls: 'gold' },
   ];
+  return cards.map(c =>
+    `<div class="stat">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value ${c.cls || ''}">${c.value}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+}
+
+function filterUsers() {
+  const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
+  const f = document.getElementById('filter')?.value || 'all';
+  return state.users.filter(u => {
+    if (q && !u.name.toLowerCase().includes(q) && !u.email.toLowerCase().includes(q)) return false;
+    if (f === 'admin' && u.role !== 'admin') return false;
+    if (f === 'suspended' && u.active) return false;
+    if (f === 'premium' && !isPremiumActive(u)) return false;
+    if (f === 'trial' && !isTrialActive(u)) return false;
+    if (f === 'expired' && (isPremiumActive(u) || isTrialActive(u))) return false;
+    return true;
+  });
 }
 
 function render() {
-  const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
   const list = document.getElementById('users-list');
-  const statsEl = document.getElementById('stats');
+  document.getElementById('stats').innerHTML = renderStats();
 
-  statsEl.innerHTML = stats().map(s =>
-    `<div class="stat"><div class="stat-label">${s.label}</div><div class="stat-value ${s.cls || ''}">${s.value}</div></div>`
-  ).join('');
-
-  const filtered = state.users.filter(u =>
-    !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
-  );
-
+  const filtered = filterUsers();
   if (!filtered.length) {
-    list.innerHTML = '<div class="empty">Aucun utilisateur ne correspond à la recherche.</div>';
+    list.innerHTML = '<div class="empty">Aucun utilisateur ne correspond aux filtres.</div>';
     return;
   }
 
@@ -279,85 +367,210 @@ function render() {
     const isMe = state.me && u.id === state.me.id;
     const roleBadge = `<span class="badge ${u.role === 'admin' ? 'admin' : 'user'}">${u.role}</span>`;
     const statusBadge = `<span class="badge ${u.active ? 'active' : 'suspended'}">${u.active ? 'actif' : 'suspendu'}</span>`;
-    const roleAction = isMe
-      ? ''
-      : `<button class="btn-mini" onclick="askRole(${u.id})">${u.role === 'admin' ? 'Rétrograder' : 'Promouvoir admin'}</button>`;
-    const activeAction = isMe
-      ? ''
-      : `<button class="btn-mini" onclick="askActive(${u.id})">${u.active ? 'Suspendre' : 'Réactiver'}</button>`;
-    const deleteAction = isMe
-      ? ''
-      : `<button class="btn-mini danger" onclick="askDelete(${u.id})">Supprimer</button>`;
+    let subBadge;
+    if (isPremiumActive(u)) {
+      subBadge = `<span class="badge premium" title="Expire le ${fmtDate(u.subscription_expires_at)}">★ premium · ${fmtDate(u.subscription_expires_at)}</span>`;
+    } else if (isTrialActive(u)) {
+      subBadge = `<span class="badge trial">essai · ${trialDaysLeft(u)}j restant</span>`;
+    } else if (u.subscription_tier === 'premium') {
+      subBadge = `<span class="badge expired">premium expiré</span>`;
+    } else {
+      subBadge = `<span class="badge free">free</span>`;
+    }
     return `
       <div class="user-card">
         <div class="avatar">${initial}</div>
         <div class="user-main">
           <div class="user-name">${escapeHtml(u.name || '(sans nom)')}${isMe ? ' <span style="color:var(--primary-soft);font-size:11px;font-weight:700">· vous</span>' : ''}</div>
           <div class="user-email">${escapeHtml(u.email)}</div>
+          <div class="user-badges">${roleBadge}${statusBadge}${subBadge}</div>
         </div>
-        ${roleBadge}
-        ${statusBadge}
-        <div class="actions">${roleAction}${activeAction}${deleteAction}</div>
+        <div class="actions">
+          <button class="btn-mini gold" onclick="askGrantPremium(${u.id})">★ Offrir premium</button>
+          ${isMe ? '' : `<button class="btn-mini" onclick="askActive(${u.id})">${u.active ? 'Suspendre' : 'Réactiver'}</button>`}
+          <div class="menu-wrap">
+            <button class="btn-mini" onclick="toggleMenu(${u.id}, event)">Plus ▾</button>
+            <div class="menu hidden" id="menu-${u.id}">
+              ${isMe ? '' : `<button onclick="askRole(${u.id})">${u.role === 'admin' ? '⟳ Rétrograder en user' : '★ Promouvoir admin'}</button>`}
+              <button onclick="askResetTrial(${u.id})">↻ Redémarrer l'essai 7j</button>
+              ${isPremiumActive(u) ? `<button onclick="askRevokePremium(${u.id})">✖ Retirer le premium</button>` : ''}
+              <button onclick="askResetPassword(${u.id})">🔑 Réinitialiser le mot de passe</button>
+              <button onclick="viewPayments(${u.id})">💳 Historique paiements</button>
+              ${isMe ? '' : `<div class="menu-divider"></div><button class="danger" onclick="askDelete(${u.id})">🗑 Supprimer le compte</button>`}
+            </div>
+          </div>
+        </div>
       </div>`;
   }).join('');
 }
 
 function escapeHtml(s) { return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+// --- Menu ---
+function toggleMenu(id, ev) {
+  ev.stopPropagation();
+  document.querySelectorAll('.menu').forEach(m => { if (m.id !== 'menu-' + id) m.classList.add('hidden'); });
+  const m = document.getElementById('menu-' + id);
+  m.classList.toggle('hidden');
+}
+document.addEventListener('click', () => document.querySelectorAll('.menu').forEach(m => m.classList.add('hidden')));
+
+// --- Actions ---
 function askRole(id) {
   const u = state.users.find(x => x.id === id);
   const newRole = u.role === 'admin' ? 'user' : 'admin';
-  openModal('Changer le rôle', `${u.name || u.email} passera de « ${u.role} » à « ${newRole} ». Continuer ?`, async () => {
-    try {
+  openConfirm('Changer le rôle', `${u.name || u.email} passera de « ${u.role} » à « ${newRole} ». Continuer ?`,
+    async () => {
       const upd = await api('/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ role: newRole }) });
       state.users = state.users.map(x => x.id === id ? upd : x);
-      render(); toast('Rôle mis à jour');
-    } catch (e) { toast(e.message, true); }
-  });
+      await refreshStats(); render(); toast('Rôle mis à jour', 'ok');
+    });
 }
 
 function askActive(id) {
   const u = state.users.find(x => x.id === id);
   const activate = !u.active;
-  openModal(activate ? 'Réactiver le compte' : 'Suspendre le compte',
+  openConfirm(activate ? 'Réactiver le compte' : 'Suspendre le compte',
     `${activate ? 'Réactiver' : 'Suspendre'} le compte de ${u.name || u.email} ?`,
     async () => {
-      try {
-        const upd = await api('/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ active: activate }) });
-        state.users = state.users.map(x => x.id === id ? upd : x);
-        render(); toast('Statut mis à jour');
-      } catch (e) { toast(e.message, true); }
-    },
-    !activate,
-  );
+      const upd = await api('/admin/users/' + id, { method: 'PATCH', body: JSON.stringify({ active: activate }) });
+      state.users = state.users.map(x => x.id === id ? upd : x);
+      await refreshStats(); render(); toast('Statut mis à jour', 'ok');
+    }, !activate);
 }
 
 function askDelete(id) {
   const u = state.users.find(x => x.id === id);
-  openModal('Supprimer le compte',
+  openConfirm('Supprimer le compte',
     `Supprimer définitivement le compte de ${u.name || u.email} (${u.email}) ? Cette action est irréversible.`,
     async () => {
-      try {
-        await api('/admin/users/' + id, { method: 'DELETE' });
-        state.users = state.users.filter(x => x.id !== id);
-        render(); toast('Compte supprimé');
-      } catch (e) { toast(e.message, true); }
-    },
-    true,
-  );
+      await api('/admin/users/' + id, { method: 'DELETE' });
+      state.users = state.users.filter(x => x.id !== id);
+      await refreshStats(); render(); toast('Compte supprimé', 'ok');
+    }, true);
 }
 
-function openModal(title, body, onConfirm, danger) {
+function askGrantPremium(id) {
+  const u = state.users.find(x => x.id === id);
+  const bodyHtml = `
+    <p>Ajoute une durée de premium au compte de <strong>${escapeHtml(u.name || u.email)}</strong>. Se cumule avec un abonnement en cours.</p>
+    <label class="label">Nombre de jours</label>
+    <select class="input modal-input" id="grant-days-select" onchange="document.getElementById('grant-days').value=this.value">
+      <option value="7">7 jours</option>
+      <option value="30" selected>30 jours (mensuel)</option>
+      <option value="90">90 jours</option>
+      <option value="365">365 jours (annuel)</option>
+      <option value="custom">Personnalisé…</option>
+    </select>
+    <input class="input modal-input" id="grant-days" type="number" min="1" max="3650" value="30">
+  `;
+  openCustom('★ Offrir du premium', bodyHtml, 'Activer', async () => {
+    const days = parseInt(document.getElementById('grant-days').value, 10);
+    if (!days || days < 1) throw new Error('Nombre de jours invalide');
+    const upd = await api(`/admin/users/${id}/grant-premium`, { method: 'POST', body: JSON.stringify({ days }) });
+    state.users = state.users.map(x => x.id === id ? upd : x);
+    await refreshStats(); render(); toast(`${days} jours de premium accordés`, 'ok');
+  });
+}
+
+function askRevokePremium(id) {
+  const u = state.users.find(x => x.id === id);
+  openConfirm('Retirer le premium',
+    `Le compte de ${u.name || u.email} repassera en free (l'essai gratuit reste indépendant).`,
+    async () => {
+      const upd = await api(`/admin/users/${id}/revoke-premium`, { method: 'POST' });
+      state.users = state.users.map(x => x.id === id ? upd : x);
+      await refreshStats(); render(); toast('Premium retiré', 'ok');
+    }, true);
+}
+
+function askResetTrial(id) {
+  const u = state.users.find(x => x.id === id);
+  openConfirm('Redémarrer l\'essai gratuit',
+    `Réinitialise le compteur d'essai de ${u.name || u.email} à 7 jours pleins à partir de maintenant.`,
+    async () => {
+      const upd = await api(`/admin/users/${id}/reset-trial`, { method: 'POST' });
+      state.users = state.users.map(x => x.id === id ? upd : x);
+      await refreshStats(); render(); toast('Essai redémarré (7 jours)', 'ok');
+    });
+}
+
+async function askResetPassword(id) {
+  const u = state.users.find(x => x.id === id);
+  openConfirm('Réinitialiser le mot de passe',
+    `Un nouveau mot de passe aléatoire sera généré pour ${u.name || u.email}. À lui transmettre par un canal sûr.`,
+    async () => {
+      const r = await api(`/admin/users/${id}/reset-password`, { method: 'POST' });
+      openInfo('Nouveau mot de passe',
+        `<p>Transmettez ce mot de passe à <strong>${escapeHtml(u.email)}</strong>. Il devra le changer à sa prochaine connexion.</p>
+         <code class="modal-code">${escapeHtml(r.new_password)}</code>
+         <p style="color:var(--fg-3);font-size:12px">L'ancien mot de passe ne fonctionne plus.</p>`);
+    });
+}
+
+async function viewPayments(id) {
+  const u = state.users.find(x => x.id === id);
+  try {
+    const payments = await api(`/admin/users/${id}/payments`);
+    let body;
+    if (!payments.length) {
+      body = `<p>Aucun paiement pour ${escapeHtml(u.name || u.email)}.</p>`;
+    } else {
+      const rows = payments.map(p => `
+        <div class="payment-row">
+          <div class="p-plan">${escapeHtml(p.plan)}<br><span style="color:var(--fg-3);font-weight:500">${escapeHtml(p.provider)} · ${fmtDate(p.created_at)}</span></div>
+          <div class="p-amount">${fmtNumber(p.amount_xof)} XOF</div>
+          <div class="p-status ${p.status}">${p.status}</div>
+        </div>`).join('');
+      body = `<div class="payments-list">${rows}</div>`;
+    }
+    openInfo(`💳 Paiements — ${escapeHtml(u.name || u.email)}`, body);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function refreshStats() {
+  try { state.stats = await api('/admin/stats'); } catch (_) {}
+}
+
+// --- Modal helpers ---
+function openConfirm(title, body, onConfirm, danger) {
   document.getElementById('modal-title').textContent = title;
-  document.getElementById('modal-body').textContent = body;
-  const btn = document.getElementById('modal-confirm');
-  btn.className = danger ? 'btn-danger' : 'btn-confirm';
-  btn.onclick = async () => { closeModal(); await onConfirm(); };
+  document.getElementById('modal-body').innerHTML = `<p>${escapeHtml(body)}</p>`;
+  const row = document.getElementById('modal-row');
+  row.innerHTML = `
+    <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+    <button id="modal-confirm" class="${danger ? 'btn-danger' : 'btn-confirm'}">Confirmer</button>`;
+  document.getElementById('modal-confirm').onclick = async () => {
+    try { await onConfirm(); closeModal(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   document.getElementById('modal').classList.remove('hidden');
 }
+
+function openCustom(title, bodyHtml, confirmLabel, onConfirm) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  const row = document.getElementById('modal-row');
+  row.innerHTML = `
+    <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+    <button id="modal-confirm" class="btn-confirm">${escapeHtml(confirmLabel)}</button>`;
+  document.getElementById('modal-confirm').onclick = async () => {
+    try { await onConfirm(); closeModal(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function openInfo(title, bodyHtml) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  document.getElementById('modal-row').innerHTML = `<button class="btn-secondary" onclick="closeModal()">Fermer</button>`;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
 function closeModal() { document.getElementById('modal').classList.add('hidden'); }
 
-// Boot
+// --- Boot ---
 (async function () {
   if (auth()) {
     try {

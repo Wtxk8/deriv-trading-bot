@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
 from pathlib import Path
@@ -327,9 +327,154 @@ def update_user(
             raise HTTPException(status_code=409, detail="Impossible de suspendre votre propre compte")
         user.active = payload.active
 
+    if payload.name is not None:
+        user.name = payload.name.strip() or user.name
+
+    if payload.email is not None and payload.email != user.email:
+        exists = db.query(models.User).filter(models.User.email == payload.email).first()
+        if exists is not None:
+            raise HTTPException(status_code=409, detail="Email déjà utilisé")
+        user.email = payload.email
+
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.post("/admin/users/{user_id}/grant-premium", response_model=schemas.UserOut)
+def admin_grant_premium(
+    user_id: int,
+    payload: schemas.AdminGrantPremium,
+    _: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> models.User:
+    """Offre N jours de premium à un utilisateur (cumulable avec un abonnement existant)."""
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user.subscription_tier = "premium"
+    user.subscription_expires_at = pay.extend_subscription(
+        user.subscription_expires_at, payload.days
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.post("/admin/users/{user_id}/revoke-premium", response_model=schemas.UserOut)
+def admin_revoke_premium(
+    user_id: int,
+    _: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> models.User:
+    """Retire l'abonnement premium (repasse en free, expire l'abonnement)."""
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user.subscription_tier = "free"
+    user.subscription_expires_at = None
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.post("/admin/users/{user_id}/reset-trial", response_model=schemas.UserOut)
+def admin_reset_trial(
+    user_id: int,
+    _: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> models.User:
+    """Redémarre l'essai gratuit 7 jours de l'utilisateur (trial_started_at = maintenant)."""
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user.trial_started_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.post("/admin/users/{user_id}/reset-password", response_model=schemas.AdminResetPasswordOut)
+def admin_reset_password(
+    user_id: int,
+    admin_user: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> schemas.AdminResetPasswordOut:
+    """Réinitialise le mot de passe et renvoie le nouveau (à transmettre à l'utilisateur)."""
+    import secrets as _secrets
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    new_password = _secrets.token_urlsafe(10)
+    user.hashed_password = auth.hash_password(new_password)
+    db.commit()
+    return schemas.AdminResetPasswordOut(new_password=new_password)
+
+
+@app.get("/admin/users/{user_id}/payments", response_model=list[schemas.AdminPaymentOut])
+def admin_user_payments(
+    user_id: int,
+    _: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> list[models.Payment]:
+    """Historique des paiements d'un utilisateur."""
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    return (
+        db.query(models.Payment)
+        .filter(models.Payment.user_id == user_id)
+        .order_by(models.Payment.created_at.desc())
+        .all()
+    )
+
+
+@app.get("/admin/stats", response_model=schemas.AdminStats)
+def admin_stats(
+    _: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+) -> schemas.AdminStats:
+    """Statistiques globales pour le tableau de bord admin."""
+    from sqlalchemy import func as sa_func
+    now = datetime.now(timezone.utc)
+    thirty_days_ago = now - timedelta(days=30)
+
+    users = db.query(models.User).all()
+    users_total = len(users)
+    users_active = sum(1 for u in users if u.active)
+    users_suspended = users_total - users_active
+    admins_total = sum(1 for u in users if u.role == "admin")
+    trial_active = sum(1 for u in users if pay.is_trial_active(u.trial_started_at))
+    premium_active = sum(
+        1 for u in users if pay.is_premium_active(u.subscription_tier, u.subscription_expires_at)
+    )
+
+    payments_paid = (
+        db.query(models.Payment).filter(models.Payment.status == "paid").count()
+    )
+    revenue_total = (
+        db.query(sa_func.coalesce(sa_func.sum(models.Payment.amount_xof), 0))
+        .filter(models.Payment.status == "paid")
+        .scalar()
+    ) or 0
+    revenue_30d = (
+        db.query(sa_func.coalesce(sa_func.sum(models.Payment.amount_xof), 0))
+        .filter(models.Payment.status == "paid")
+        .filter(models.Payment.paid_at >= thirty_days_ago)
+        .scalar()
+    ) or 0
+
+    return schemas.AdminStats(
+        users_total=users_total,
+        users_active=users_active,
+        users_suspended=users_suspended,
+        admins_total=admins_total,
+        trial_active=trial_active,
+        premium_active=premium_active,
+        payments_paid=payments_paid,
+        revenue_xof_total=int(revenue_total),
+        revenue_xof_30d=int(revenue_30d),
+    )
 
 
 @app.delete("/admin/users/{user_id}", status_code=204, response_model=None)

@@ -72,6 +72,8 @@ class Token(BaseModel):
 class AdminUserUpdate(BaseModel):
     role: Optional[str] = None
     active: Optional[bool] = None
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
 
     @field_validator("role")
     @classmethod
@@ -79,3 +81,36 @@ class AdminUserUpdate(BaseModel):
         if value is not None and value not in _VALID_ROLES:
             raise ValueError(f"Rôle invalide: {value}")
         return value
+
+
+class AdminGrantPremium(BaseModel):
+    days: int = Field(..., gt=0, le=3650, description="Nombre de jours à ajouter")
+
+
+class AdminResetPasswordOut(BaseModel):
+    new_password: str
+
+
+class AdminStats(BaseModel):
+    users_total: int
+    users_active: int
+    users_suspended: int
+    admins_total: int
+    trial_active: int
+    premium_active: int
+    payments_paid: int
+    revenue_xof_total: int
+    revenue_xof_30d: int
+
+
+class AdminPaymentOut(BaseModel):
+    id: int
+    plan: str
+    provider: str
+    provider_ref: str
+    amount_xof: int
+    status: str
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
