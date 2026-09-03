@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 import auth
 import models
 import payments as pay
+import rate_limit
 import schemas
 from bot_engine import BotEngine, StrategyType
 from deriv_client import DerivError
@@ -263,7 +264,12 @@ async def ws_bot_status(websocket: WebSocket) -> None:
 # Authentification
 # ----------------------------------------------------------------------
 @app.post("/register", response_model=schemas.UserOut, status_code=201)
-def register(payload: schemas.UserCreate, db: Session = Depends(get_db)) -> models.User:
+def register(
+    payload: schemas.UserCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> models.User:
+    rate_limit.register_limiter.check(rate_limit.client_ip(request))
     if db.query(models.User).filter(models.User.email == payload.email).first() is not None:
         raise HTTPException(status_code=409, detail="Email déjà utilisé")
     user = models.User(
@@ -281,12 +287,27 @@ def register(payload: schemas.UserCreate, db: Session = Depends(get_db)) -> mode
 
 
 @app.post("/login", response_model=schemas.Token)
-def login(payload: schemas.UserLogin, db: Session = Depends(get_db)) -> schemas.Token:
+def login(
+    payload: schemas.UserLogin,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> schemas.Token:
+    # Double garde : par IP (bruteforce large) et par compte (bruteforce ciblé).
+    ip = rate_limit.client_ip(request)
+    account_key = payload.email.lower()
+    rate_limit.login_limiter.check(ip)
+    rate_limit.login_account_limiter.check(account_key)
+
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if user is None or not auth.verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Identifiants invalides")
     if not user.active:
         raise HTTPException(status_code=403, detail="Compte suspendu")
+
+    # Connexion réussie : on libère les compteurs pour ne pas pénaliser l'usage normal.
+    rate_limit.login_limiter.reset(ip)
+    rate_limit.login_account_limiter.reset(account_key)
+
     token = auth.create_access_token(user)
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
@@ -584,12 +605,23 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)) -> di
     raw = await request.body()
     try:
         provider = pay.get_provider(payment.provider)
-        provider.verify_webhook({k.lower(): v for k, v in request.headers.items()}, raw)
+        event = provider.verify_webhook(
+            {k.lower(): v for k, v in request.headers.items()}, raw
+        )
     except pay.PaymentError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if payment.status == "paid":
         return {"status": "already_paid"}
+
+    # La signature prouve l'origine, pas l'encaissement : on exige un statut de succès.
+    if not pay.webhook_indicates_payment(event):
+        payment.status = "failed"
+        db.commit()
+        logger.warning(
+            "Webhook paiement %s sans statut de succès — abonnement non activé", payment.id
+        )
+        return {"status": "ignored"}
 
     plan = pay.resolve_plan(payment.plan)
     user = db.get(models.User, payment.user_id)
@@ -608,7 +640,14 @@ async def billing_webhook(request: Request, db: Session = Depends(get_db)) -> di
 
 @app.get("/billing/dev-pay", include_in_schema=False)
 async def billing_dev_pay(ref: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Endpoint de dev (provider `manual`) : confirme un paiement sans passerelle."""
+    """Endpoint de dev (provider `manual`) : confirme un paiement sans passerelle.
+
+    Désactivé sauf si ALLOW_MANUAL_PAYMENTS=true : sans ce garde-fou, n'importe
+    qui pourrait s'activer un abonnement premium sans payer.
+    """
+    if not pay.manual_payments_allowed():
+        raise HTTPException(status_code=404, detail="Not Found")
+
     payment = db.query(models.Payment).filter(models.Payment.provider_ref == ref).first()
     if payment is None:
         raise HTTPException(status_code=404, detail="Paiement introuvable")

@@ -41,6 +41,40 @@ def resolve_plan(plan: str) -> dict[str, Any]:
     return PLANS[plan]
 
 
+# Statuts FedaPay considérés comme un encaissement réussi.
+_SUCCESS_STATUSES = {"approved", "transferred", "paid", "succeeded", "success"}
+
+
+def webhook_indicates_payment(payload: dict[str, Any]) -> bool:
+    """True si le webhook décrit un paiement réellement encaissé.
+
+    Le fournisseur signe AUSSI les transactions refusées/annulées : se fier à la
+    seule signature activerait un abonnement sur un paiement échoué. On exige donc
+    un statut de succès explicite (fail-closed : en cas de doute on n'active pas,
+    l'admin peut toujours créditer manuellement depuis la console).
+    """
+    candidates: list[str] = []
+
+    entity = payload.get("entity")
+    if isinstance(entity, dict):
+        status = entity.get("status")
+        if isinstance(status, str):
+            candidates.append(status)
+
+    for key in ("status", "name", "event"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+
+    for raw in candidates:
+        normalized = raw.strip().lower()
+        # "transaction.approved" -> on ne garde que le dernier segment.
+        tail = normalized.rsplit(".", 1)[-1]
+        if tail in _SUCCESS_STATUSES:
+            return True
+    return False
+
+
 class PaymentError(RuntimeError):
     pass
 
@@ -157,10 +191,24 @@ class FedaPayProvider(PaymentProvider):
             raise PaymentError(f"Payload JSON invalide: {exc}") from exc
 
 
+def manual_payments_allowed() -> bool:
+    """Le provider `manual` (auto-validation sans passerelle) est-il autorisé ?
+
+    DOIT rester désactivé en production : il permet d'activer un abonnement
+    sans paiement réel. Activer uniquement en développement local via
+    ALLOW_MANUAL_PAYMENTS=true.
+    """
+    return os.environ.get("ALLOW_MANUAL_PAYMENTS", "").lower() in ("1", "true", "yes")
+
+
 def get_provider(name: str) -> PaymentProvider:
     """Instancie un provider selon la config d'env."""
     name = (name or "").lower().strip()
     if name in ("manual", "dev", ""):
+        if not manual_payments_allowed():
+            raise PaymentError(
+                "Provider de paiement indisponible. Utilisez un moyen de paiement valide."
+            )
         return ManualProvider()
     if name == "fedapay":
         return FedaPayProvider(
