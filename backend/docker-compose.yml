@@ -9,7 +9,11 @@ services:
     environment:
       TRADING_DATABASE_URL: sqlite:////app/data/app.db
     ports:
-      - "8000:8000"
+      # Loopback uniquement : le service n'est joignable que via le tunnel
+      # Cloudflare (qui se connecte sur 127.0.0.1:8000). Exposer sur 0.0.0.0
+      # permettrait, depuis le LAN, de contourner Cloudflare et d'usurper
+      # l'en-tête CF-Connecting-IP pour neutraliser le rate limiting par IP.
+      - "127.0.0.1:8000:8000"
     volumes:
       - backend_data:/app/data
 
