@@ -7,19 +7,19 @@ import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
 import 'dashboard_screen.dart';
-import 'register_screen.dart';
 
-/// Connexion au compte applicatif (email + mdp) — dark premium.
-class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+/// Création de compte — déclenche l'essai gratuit 7 jours + auto-login.
+class RegisterScreen extends ConsumerStatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  ConsumerState<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final TextEditingController _email = TextEditingController();
-  final TextEditingController _password = TextEditingController();
+class _RegisterScreenState extends ConsumerState<RegisterScreen> {
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _confirm = TextEditingController();
   bool _obscure = true;
   bool _busy = false;
 
@@ -27,28 +27,39 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _confirm.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
+  Future<void> _register() async {
     final email = _email.text.trim();
-    final password = _password.text;
-    if (email.isEmpty || password.isEmpty) {
+    final pwd = _password.text;
+    final confirm = _confirm.text;
+    if (email.isEmpty || pwd.isEmpty) {
       _snack('Email et mot de passe requis');
+      return;
+    }
+    if (pwd.length < 8) {
+      _snack('Le mot de passe doit contenir au moins 8 caractères');
+      return;
+    }
+    if (pwd != confirm) {
+      _snack('Les mots de passe ne correspondent pas');
       return;
     }
     setState(() => _busy = true);
     try {
-      final jwt = await ref.read(authServiceProvider).login(email, password);
+      final jwt = await ref.read(authServiceProvider).register(email: email, password: pwd);
       await ref.read(jwtProvider.notifier).save(jwt);
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
+      Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute<void>(builder: (_) => const DashboardScreen()),
+        (route) => false,
       );
     } on AuthServiceException catch (e) {
       _snack(e.toString());
     } catch (e) {
-      _snack('Échec de connexion : $e');
+      _snack('Échec : $e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -72,19 +83,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const BrandLogo(size: 46, letter: 'D'),
-              const SizedBox(height: 30),
-              Text('Bienvenue sur\nDeriv Trading Bot',
-                  style: AppTheme.heading(fontSize: 30, letterSpacing: -0.8).copyWith(height: 1.12)),
+              const SizedBox(height: 24),
+              Text('Créer votre compte', style: AppTheme.heading(fontSize: 28, letterSpacing: -0.8).copyWith(height: 1.12)),
               const SizedBox(height: 12),
               Text(
-                'Pilotage et supervision de votre robot de trading connecté à Deriv.',
-                style: GoogleFonts.manrope(fontSize: 14.5, height: 1.5, color: AppColors.textTertiary),
+                '7 jours d\'essai gratuit sur compte réel Deriv, puis abonnement Premium par Mobile Money.',
+                style: GoogleFonts.manrope(fontSize: 14, height: 1.5, color: AppColors.textTertiary),
               ),
-              const SizedBox(height: 38),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8, left: 4),
-                child: Text('ADRESSE E-MAIL', style: AppTheme.labelMicro()),
-              ),
+              const SizedBox(height: 28),
+              _label('ADRESSE E-MAIL'),
               TextField(
                 controller: _email,
                 keyboardType: TextInputType.emailAddress,
@@ -94,19 +101,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 decoration: const InputDecoration(hintText: 'vous@exemple.com'),
               ),
               const SizedBox(height: 14),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8, left: 4),
-                child: Text('MOT DE PASSE', style: AppTheme.labelMicro()),
-              ),
+              _label('MOT DE PASSE'),
               TextField(
                 controller: _password,
                 obscureText: _obscure,
                 autocorrect: false,
                 enableSuggestions: false,
-                onSubmitted: (_) => _busy ? null : _login(),
                 style: GoogleFonts.manrope(color: AppColors.textPrimary, fontSize: 15.5, fontWeight: FontWeight.w500),
                 decoration: InputDecoration(
-                  hintText: '••••••••••',
+                  hintText: 'Minimum 8 caractères',
                   suffixIcon: TextButton(
                     onPressed: () => setState(() => _obscure = !_obscure),
                     child: Text(_obscure ? 'Voir' : 'Masquer',
@@ -114,52 +117,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 26),
-              _PrimaryButton(label: 'Se connecter', busy: _busy, onPressed: _busy ? null : _login),
               const SizedBox(height: 14),
+              _label('CONFIRMER LE MOT DE PASSE'),
+              TextField(
+                controller: _confirm,
+                obscureText: _obscure,
+                autocorrect: false,
+                enableSuggestions: false,
+                onSubmitted: (_) => _busy ? null : _register(),
+                style: GoogleFonts.manrope(color: AppColors.textPrimary, fontSize: 15.5, fontWeight: FontWeight.w500),
+                decoration: const InputDecoration(hintText: '••••••••••'),
+              ),
+              const SizedBox(height: 24),
+              _PrimaryButton(label: 'Créer mon compte', busy: _busy, onPressed: _busy ? null : _register),
+              const SizedBox(height: 18),
               Center(
                 child: TextButton(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const RegisterScreen()),
-                  ),
+                  onPressed: () => Navigator.of(context).pop(),
                   child: Text.rich(
                     TextSpan(
-                      text: 'Pas encore de compte ? ',
+                      text: 'Déjà inscrit ? ',
                       style: GoogleFonts.manrope(fontSize: 13.5, color: AppColors.textTertiary),
                       children: [
                         TextSpan(
-                          text: 'Créer un compte',
+                          text: 'Se connecter',
                           style: GoogleFonts.manrope(fontSize: 13.5, color: AppColors.primarySoft, fontWeight: FontWeight.w700),
                         ),
                       ],
                     ),
                   ),
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: AppTheme.card(radius: AppRadii.md, color: AppColors.surfaceLow, border: AppColors.borderSoft),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: AppColors.success.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(9),
-                      ),
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.check_rounded, color: AppColors.success, size: 16),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Chiffrement local du token API. Aucune clé n\'est transmise à nos serveurs.',
-                        style: GoogleFonts.manrope(fontSize: 11.5, height: 1.45, color: AppColors.textTertiary),
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ],
@@ -168,6 +154,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       ),
     );
   }
+
+  Widget _label(String txt) => Padding(
+        padding: const EdgeInsets.only(bottom: 8, left: 4),
+        child: Text(txt, style: AppTheme.labelMicro()),
+      );
 }
 
 class _PrimaryButton extends StatelessWidget {
