@@ -80,6 +80,7 @@ input, select { font-family: inherit }
 .badge.trial { background: rgba(108,123,255,.14); color: var(--primary-soft) }
 .badge.expired { background: rgba(255,92,122,.10); color: var(--danger) }
 .badge.free { background: rgba(255,255,255,.05); color: var(--fg-3) }
+.badge.master { background: rgba(62,213,152,.08); color: var(--success); box-shadow: inset 0 0 0 1px rgba(62,213,152,.35) }
 
 .actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap }
 .btn-mini { border: 1px solid var(--border); background: var(--surface-alt); color: var(--fg-2); padding: 7px 12px; border-radius: 10px; font-size: 12px; font-weight: 700 }
@@ -208,7 +209,7 @@ input, select { font-family: inherit }
 <script>
 const API = window.location.origin;
 const TOKEN_KEY = 'admin_jwt';
-let state = { users: [], stats: null, me: null };
+let state = { users: [], stats: null, me: null, masters: {}, copyEnabled: false };
 
 function toast(msg, kind) {
   const t = document.getElementById('toast');
@@ -268,7 +269,7 @@ async function login(e) {
 
 function logout() {
   clearAuth();
-  state = { users: [], stats: null, me: null };
+  state = { users: [], stats: null, me: null, masters: {}, copyEnabled: false };
   showLogin();
 }
 
@@ -288,10 +289,24 @@ async function afterLogin() {
 
 async function loadAll() {
   try {
-    const [users, stats] = await Promise.all([api('/admin/users'), api('/admin/stats')]);
+    const [users, stats] = await Promise.all([api('/admin/users'), api('/admin/stats'), loadMasters()]);
     state.users = users; state.stats = stats;
     render();
   } catch (e) { toast(e.message, 'err'); }
+}
+
+// Copy trading : traders maîtres. Un échec (503 si la fonction est désactivée)
+// masque simplement les options, sans erreur visible.
+async function loadMasters() {
+  try {
+    const list = await api('/admin/copy/masters');
+    state.masters = {};
+    (list || []).forEach(m => { state.masters[m.user_id] = m; });
+    state.copyEnabled = true;
+  } catch (_) {
+    state.masters = {};
+    state.copyEnabled = false;
+  }
 }
 
 // --- Rendering ---
@@ -377,13 +392,21 @@ function render() {
     } else {
       subBadge = `<span class="badge free">free</span>`;
     }
+    const master = state.copyEnabled ? state.masters[u.id] : null;
+    const masterBadge = master
+      ? `<span class="badge master" title="Trader maître : ${escapeHtml(master.display_name)}">maître</span>`
+      : '';
+    const masterAction = !state.copyEnabled ? ''
+      : master
+        ? `<button onclick="askRemoveMaster(${u.id})">✖ Retirer le statut maître</button>`
+        : `<button onclick="askSetMaster(${u.id})">👑 Désigner trader maître</button>`;
     return `
       <div class="user-card">
         <div class="avatar">${initial}</div>
         <div class="user-main">
           <div class="user-name">${escapeHtml(u.name || '(sans nom)')}${isMe ? ' <span style="color:var(--primary-soft);font-size:11px;font-weight:700">· vous</span>' : ''}</div>
           <div class="user-email">${escapeHtml(u.email)}</div>
-          <div class="user-badges">${roleBadge}${statusBadge}${subBadge}</div>
+          <div class="user-badges">${roleBadge}${statusBadge}${subBadge}${masterBadge}</div>
         </div>
         <div class="actions">
           <button class="btn-mini gold" onclick="askGrantPremium(${u.id})">★ Offrir premium</button>
@@ -396,6 +419,7 @@ function render() {
               ${isPremiumActive(u) ? `<button onclick="askRevokePremium(${u.id})">✖ Retirer le premium</button>` : ''}
               <button onclick="askResetPassword(${u.id})">🔑 Réinitialiser le mot de passe</button>
               <button onclick="viewPayments(${u.id})">💳 Historique paiements</button>
+              ${masterAction}
               ${isMe ? '' : `<div class="menu-divider"></div><button class="danger" onclick="askDelete(${u.id})">🗑 Supprimer le compte</button>`}
             </div>
           </div>
@@ -526,6 +550,38 @@ async function viewPayments(id) {
     }
     openInfo(`💳 Paiements — ${escapeHtml(u.name || u.email)}`, body);
   } catch (e) { toast(e.message, 'err'); }
+}
+
+function askSetMaster(id) {
+  const u = state.users.find(x => x.id === id);
+  const bodyHtml = `
+    <p><strong>${escapeHtml(u.name || u.email)}</strong> sera proposé comme trader à copier dans l'application.</p>
+    <label class="label">Nom affiché</label>
+    <input class="input modal-input" id="master-name" maxlength="80" value="${escapeHtml(u.name || u.email.split('@')[0])}">
+    <label class="label">Bio (optionnelle)</label>
+    <textarea class="input modal-input" id="master-bio" maxlength="500" rows="3" style="resize:vertical" placeholder="Style de trading, marchés suivis…"></textarea>
+  `;
+  openCustom('👑 Désigner trader maître', bodyHtml, 'Désigner', async () => {
+    const display_name = document.getElementById('master-name').value.trim();
+    const bio = document.getElementById('master-bio').value.trim();
+    if (!display_name) throw new Error('Nom affiché obligatoire');
+    const m = await api('/admin/copy/masters', {
+      method: 'POST', body: JSON.stringify({ user_id: id, display_name, bio }),
+    });
+    state.masters[id] = m || { user_id: id, display_name, bio };
+    render(); toast('Trader maître désigné', 'ok');
+  });
+}
+
+function askRemoveMaster(id) {
+  const u = state.users.find(x => x.id === id);
+  openConfirm('Retirer le statut maître',
+    `${u.name || u.email} ne sera plus proposé comme trader à copier. Continuer ?`,
+    async () => {
+      await api(`/admin/copy/masters/${id}`, { method: 'DELETE' });
+      delete state.masters[id];
+      render(); toast('Statut maître retiré', 'ok');
+    }, true);
 }
 
 async function refreshStats() {

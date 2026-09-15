@@ -1,17 +1,21 @@
-"""API FastAPI : télécommande légère du BotEngine pour l'app Flutter.
+"""API FastAPI du Deriv Trading Bot (app Flutter + console admin web).
 
-Endpoints:
-- POST /api/bot/start   : démarre une session de trading.
-- POST /api/bot/stop    : arrête immédiatement le bot.
-- GET  /api/bot/status  : snapshot d'état + PnL.
-- WS   /ws/bot/status   : flux temps réel du snapshot (push ~1s).
-
-Une seule instance globale `BotEngine` est partagée (bot 24/7 côté serveur).
+Domaines :
+- Bot de trading (routers/bot.py) : POST /api/bot/start, POST /api/bot/stop,
+  GET /api/bot/status, WS /ws/bot/status. Une session par utilisateur, portée
+  par `app.state.bot_manager` (BotManager) ; JWT obligatoire.
+- Signaux (routers/signals.py) : GET /signals, GET /signals/stats, WS /ws/signals.
+  Moteur `app.state.signal_engine`, absent si SIGNALS_ENABLED=false.
+- Copy trading (routers/copy_trading.py) : /copy/*, /admin/copy/masters*.
+  Service `app.state.copy_service`, inactif tant que COPY_TRADING_ENABLED et
+  COPY_TOKEN_KEY ne sont pas configurés.
+- Comptes, administration et abonnements (ce module) : /register, /login, /me,
+  /admin/users*, /admin/stats, /billing/*, /affiliate/deriv, console /admin,
+  /health.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,23 +25,28 @@ from typing import Any, AsyncIterator
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import auth
 import models
+import models_copy  # noqa: F401  (enregistre les tables copy trading avant create_all)
+import models_signals  # noqa: F401  (enregistre les tables signaux avant create_all)
 import payments as pay
 import rate_limit
 import schemas
-from bot_engine import BotEngine, StrategyType
-from deriv_client import DerivError
+from bot_manager import BotManager
+from copy_trading import CopyTradingService
 from database import SessionLocal, get_db
 from database import engine as db_engine
 from fastapi import Request
+from routers import bot as bot_router
+from routers import copy_trading as copy_trading_router
+from routers import signals as signals_router
+from signal_engine import SignalEngine
 
 load_dotenv()
 
@@ -47,30 +56,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# Intervalle de push du flux WebSocket (secondes).
-WS_PUSH_INTERVAL: float = 1.0
 
-# Instance unique du moteur (partagée entre requêtes).
-engine: BotEngine = BotEngine()
-
-
-# ----------------------------------------------------------------------
-# Modèles Pydantic
-# ----------------------------------------------------------------------
-class StartBotRequest(BaseModel):
-    api_token: str = Field(..., min_length=1, description="Token API Deriv")
-    symbol: str = Field("R_100", min_length=1, description="Indice synthétique")
-    stake: float = Field(..., gt=0, description="Mise par trade")
-    stop_loss: float = Field(..., gt=0, description="Perte journalière max (abs)")
-    take_profit: float = Field(..., gt=0, description="Gain journalier cible (abs)")
-    strategy_type: str = Field("RISE_FALL", description="RISE_FALL | OVER_UNDER | MARTINGALE")
-    account_type: str = Field("demo", description="demo | real — gate premium sur real")
-
-
-class ActionResponse(BaseModel):
-    ok: bool
-    state: str
-    detail: str | None = None
+def _env_flag(name: str, default: bool) -> bool:
+    """Lit un booléen d'environnement (1/true/yes/on) ; vide ou absent -> défaut."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ----------------------------------------------------------------------
@@ -121,14 +113,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _ensure_migrations()
     with SessionLocal() as db:
         auth.ensure_default_admin(db)
+
+    # Sessions de trading : une par utilisateur.
+    app.state.bot_manager = BotManager()
+
+    # Copy trading : s'abonne aux événements du bot (sans effet si désactivé).
+    app.state.copy_service = CopyTradingService(SessionLocal, app.state.bot_manager)
+    app.state.copy_service.register()
+
+    # Signaux : désactivables via SIGNALS_ENABLED=false (les routes gèrent l'absence).
+    # Un échec de démarrage est journalisé mais n'empêche pas le serveur de démarrer.
+    if _env_flag("SIGNALS_ENABLED", True):
+        try:
+            app.state.signal_engine = SignalEngine(SessionLocal)
+            await app.state.signal_engine.start()
+        except Exception:  # noqa: BLE001
+            logger.exception("Échec du démarrage du moteur de signaux (serveur maintenu)")
+    else:
+        logger.info("Moteur de signaux désactivé (SIGNALS_ENABLED=false)")
+
     try:
         yield
     finally:
-        logger.info("Arrêt serveur : coupure du bot")
+        logger.info("Arrêt serveur : copy trading, signaux puis sessions de bot")
+        copy_service = getattr(app.state, "copy_service", None)
+        if copy_service is not None:
+            try:
+                await copy_service.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("Erreur à l'arrêt du copy trading")
+        signal_engine = getattr(app.state, "signal_engine", None)
+        if signal_engine is not None:
+            try:
+                await signal_engine.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("Erreur à l'arrêt du moteur de signaux")
         try:
-            await engine.stop()
+            await app.state.bot_manager.shutdown()
         except Exception:  # noqa: BLE001
-            logger.exception("Erreur à l'arrêt du bot")
+            logger.exception("Erreur à l'arrêt des sessions de bot")
 
 
 app = FastAPI(title="Deriv Trading Bot API", version="1.0.0", lifespan=lifespan)
@@ -141,123 +164,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-def _require_premium_if_real(
-    req: "StartBotRequest",
-    user: models.User | None,
-) -> None:
-    """Bloque le démarrage sur compte réel si l'utilisateur n'a ni essai ni premium.
-
-    Modèle :
-    - Démo : libre pour tous.
-    - Réel : essai gratuit 7 jours à l'inscription, puis abonnement premium requis.
-    """
-    if not (req.account_type or "").lower().startswith("real"):
-        return
-    if user is None:
-        raise HTTPException(
-            status_code=402,
-            detail="Compte réel : connexion + abonnement premium requis.",
-        )
-    if user.role == "admin":
-        return
-    if pay.can_trade_real(
-        user.subscription_tier, user.subscription_expires_at, user.trial_started_at
-    ):
-        return
-    raise HTTPException(
-        status_code=402,
-        detail="Votre essai gratuit de 7 jours est terminé. Passez au premium pour continuer à trader en compte réel.",
-    )
-
-
-# ----------------------------------------------------------------------
-# Endpoints REST
-# ----------------------------------------------------------------------
-@app.post("/api/bot/start", response_model=ActionResponse)
-async def start_bot(
-    req: StartBotRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> ActionResponse:
-    try:
-        strategy = StrategyType(req.strategy_type)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"strategy_type invalide: {req.strategy_type}"
-        ) from exc
-
-    # Gate abonnement : compte réel Deriv → premium requis (démo reste libre).
-    current_user: models.User | None = None
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        try:
-            payload = auth.decode_access_token(auth_header[7:])
-            sub = payload.get("sub")
-            if sub is not None:
-                current_user = db.get(models.User, int(sub))
-        except HTTPException:
-            current_user = None
-    _require_premium_if_real(req, current_user)
-
-    try:
-        await engine.start(
-            api_token=req.api_token,
-            symbol=req.symbol,
-            stake=req.stake,
-            stop_loss=req.stop_loss,
-            take_profit=req.take_profit,
-            strategy_type=strategy,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except DerivError as exc:
-        # 4xx : Cloudflare remplace tout 5xx origine par sa page générique,
-        # masquant le détail (token invalide, etc.) — jamais utiliser 5xx ici.
-        raise HTTPException(status_code=400, detail=f"Deriv a refusé la requête: {exc}") from exc
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Échec démarrage bot")
-        raise HTTPException(status_code=400, detail=f"Échec démarrage: {exc}") from exc
-
-    status = engine.get_status()
-    return ActionResponse(ok=True, state=status["state"], detail="Bot démarré")
-
-
-@app.post("/api/bot/stop", response_model=ActionResponse)
-async def stop_bot() -> ActionResponse:
-    try:
-        await engine.stop()
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Échec arrêt bot")
-        raise HTTPException(status_code=400, detail=f"Échec arrêt: {exc}") from exc
-    status = engine.get_status()
-    return ActionResponse(ok=True, state=status["state"], detail="Bot arrêté")
-
-
-@app.get("/api/bot/status")
-async def bot_status() -> dict[str, Any]:
-    return engine.get_status()
-
-
-# ----------------------------------------------------------------------
-# Endpoint WebSocket (flux temps réel)
-# ----------------------------------------------------------------------
-@app.websocket("/ws/bot/status")
-async def ws_bot_status(websocket: WebSocket) -> None:
-    await websocket.accept()
-    logger.info("Client WS connecté")
-    try:
-        while True:
-            await websocket.send_json(engine.get_status())
-            await asyncio.sleep(WS_PUSH_INTERVAL)
-    except WebSocketDisconnect:
-        logger.info("Client WS déconnecté")
-    except Exception:  # noqa: BLE001
-        logger.exception("Erreur flux WS")
-        try:
-            await websocket.close()
-        except Exception:  # noqa: BLE001
-            pass
+# Routeurs par domaine (après le middleware CORS).
+app.include_router(bot_router.router)
+app.include_router(signals_router.router)
+app.include_router(copy_trading_router.router)
 
 
 # ----------------------------------------------------------------------

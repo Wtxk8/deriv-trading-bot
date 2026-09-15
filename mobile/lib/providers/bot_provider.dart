@@ -2,16 +2,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../services/bot_service.dart';
+import 'auth_provider.dart';
+import 'storage_provider.dart';
+
+// Ré-export : les écrans qui lisent `secureStorageProvider` via ce fichier
+// continuent de fonctionner.
+export 'storage_provider.dart';
 
 /// Clé de stockage sécurisé du token API Deriv.
 const String kTokenKey = 'deriv_api_token';
 
 /// Instance partagée du service backend.
 final botServiceProvider = Provider<BotService>((ref) => BotService());
-
-/// Stockage sécurisé (Keystore Android / Keychain iOS).
-final secureStorageProvider =
-    Provider<FlutterSecureStorage>((ref) => const FlutterSecureStorage());
 
 /// Notifier lisant/écrivant le token dans le stockage sécurisé.
 class TokenNotifier extends StateNotifier<String?> {
@@ -46,8 +48,16 @@ final bootTokenProvider = FutureProvider<String?>(
   (ref) => ref.read(secureStorageProvider).read(key: kTokenKey),
 );
 
-/// Flux temps réel du statut du bot (auto-reconnecté par le service).
+/// Flux temps réel du statut du bot de l'utilisateur connecté.
+///
+/// Dépend du JWT : reconnecté à chaque changement de session, flux vide sans
+/// JWT (le serveur exige une authentification). Auto-reconnexion gérée par le
+/// service, sauf refus du JWT (fermeture 4401).
 final botStatusStreamProvider =
-    StreamProvider.autoDispose<Map<String, dynamic>>(
-  (ref) => ref.watch(botServiceProvider).connectStatusStream(),
-);
+    StreamProvider.autoDispose<Map<String, dynamic>>((ref) {
+  final jwt = ref.watch(jwtProvider);
+  if (jwt == null || jwt.isEmpty) {
+    return const Stream<Map<String, dynamic>>.empty();
+  }
+  return ref.watch(botServiceProvider).connectStatusStream(jwt);
+});

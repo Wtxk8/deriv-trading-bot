@@ -11,6 +11,9 @@ class BotService {
   /// Hôte (sans schéma, sans port — routé via le tunnel Cloudflare Access).
   final String host;
 
+  /// Code de fermeture WebSocket du serveur quand le JWT est refusé/expiré.
+  static const int wsUnauthorizedCode = 4401;
+
   Uri _http(String path) => Uri.parse('https://$host$path');
   Uri _ws(String path) => Uri.parse('wss://$host$path');
 
@@ -18,6 +21,15 @@ class BotService {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   };
+
+  /// En-têtes JSON, avec `Authorization: Bearer <jwt>` si un JWT est fourni.
+  Map<String, String> _headers(String? jwt) {
+    final headers = Map<String, String>.from(_jsonHeaders);
+    if (jwt != null && jwt.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $jwt';
+    }
+    return headers;
+  }
 
   Future<Map<String, dynamic>> startBot({
     required String token,
@@ -29,14 +41,10 @@ class BotService {
     String accountType = 'demo',
     String? jwt,
   }) async {
-    final headers = Map<String, String>.from(_jsonHeaders);
-    if (jwt != null && jwt.isNotEmpty) {
-      headers['Authorization'] = 'Bearer $jwt';
-    }
     final response = await http
         .post(
           _http('/api/bot/start'),
-          headers: headers,
+          headers: _headers(jwt),
           body: jsonEncode(<String, dynamic>{
             'api_token': token,
             'symbol': symbol,
@@ -51,9 +59,9 @@ class BotService {
     return _decode(response);
   }
 
-  Future<Map<String, dynamic>> stopBot() async {
+  Future<Map<String, dynamic>> stopBot({String? jwt}) async {
     final response = await http
-        .post(_http('/api/bot/stop'), headers: _jsonHeaders)
+        .post(_http('/api/bot/stop'), headers: _headers(jwt))
         .timeout(const Duration(seconds: 20));
     return _decode(response);
   }
@@ -71,23 +79,32 @@ class BotService {
     return url;
   }
 
-  Future<Map<String, dynamic>> getStatus() async {
+  Future<Map<String, dynamic>> getStatus({String? jwt}) async {
     final response = await http
-        .get(_http('/api/bot/status'), headers: _jsonHeaders)
+        .get(_http('/api/bot/status'), headers: _headers(jwt))
         .timeout(const Duration(seconds: 15));
     return _decode(response);
   }
 
-  /// Flux temps réel du statut avec auto-reconnexion (backoff 2s).
-  Stream<Map<String, dynamic>> connectStatusStream() async* {
+  /// Flux temps réel du statut du bot de l'utilisateur (JWT requis).
+  ///
+  /// Après connexion, le client s'authentifie par un premier message
+  /// `{"type":"auth","token":jwt}` ; l'accusé `{"type":"auth_ok"}` est ignoré.
+  /// Auto-reconnexion (délai 2s) sur coupure, sauf fermeture 4401 (JWT
+  /// refusé) : le flux s'arrête, inutile de boucler.
+  Stream<Map<String, dynamic>> connectStatusStream(String jwt) async* {
     while (true) {
       WebSocketChannel? channel;
       try {
         channel = WebSocketChannel.connect(_ws('/ws/bot/status'));
         await channel.ready;
+        channel.sink.add(
+          jsonEncode(<String, dynamic>{'type': 'auth', 'token': jwt}),
+        );
         await for (final dynamic message in channel.stream) {
           final decoded = jsonDecode(message as String);
           if (decoded is Map<String, dynamic>) {
+            if (decoded['type'] == 'auth_ok') continue;
             yield decoded;
           }
         }
@@ -95,6 +112,10 @@ class BotService {
         // Connexion perdue : on retente après un court délai.
       } finally {
         await channel?.sink.close();
+      }
+      if (channel?.closeCode == wsUnauthorizedCode) {
+        // JWT refusé ou expiré : fin du flux (reconnexion via un nouveau JWT).
+        return;
       }
       await Future<void>.delayed(const Duration(seconds: 2));
     }

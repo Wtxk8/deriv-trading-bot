@@ -150,12 +150,23 @@ class DerivClient:
         except ValueError as exc:
             raise DerivError("BadResponse", "Réponse JSON invalide") from exc
 
-        accounts = payload.get("data") or []
-        if not accounts:
-            raise DerivError("NoAccount", "Aucun compte options disponible")
+        accounts = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(accounts, list):
+            accounts = []
 
-        pref = self._preferred_account_type
-        picked = next((a for a in accounts if a.get("account_type") == pref), accounts[0])
+        # Correspondance STRICTE du type de compte : un même token porte souvent
+        # un compte démo ET un compte réel ; retomber sur « le premier venu »
+        # pourrait faire trader en réel un utilisateur qui a demandé la démo.
+        pref = str(self._preferred_account_type or "").strip().lower()
+        picked: Optional[dict[str, Any]] = None
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            if pref and str(account.get("account_type") or "").strip().lower() == pref:
+                picked = account
+                break
+        if picked is None:
+            raise DerivError("NoAccount", f"Aucun compte {pref} disponible sur ce token")
 
         try:
             return {
@@ -163,7 +174,7 @@ class DerivClient:
                 "account_id": picked["account_id"],
                 "balance": float(picked.get("balance", 0.0)),
                 "currency": picked.get("currency", "USD"),
-                "account_type": picked.get("account_type", "demo"),
+                "account_type": pref,
                 "status": picked.get("status"),
             }
         except (KeyError, TypeError, ValueError) as exc:

@@ -10,9 +10,11 @@ import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
 import 'admin_user_management_screen.dart';
 import 'api_token_screen.dart';
+import 'copy_trading_screen.dart';
 import 'login_screen.dart';
 import 'premium_screen.dart';
 import 'require_admin.dart';
+import 'signals_screen.dart';
 
 /// Écran principal : header, PnL card, garde-fous, stratégie, trades, CTA.
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -37,6 +39,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   BotService get _service => ref.read(botServiceProvider);
 
   Future<void> _start() async {
+    // Le serveur exige un compte (JWT) pour piloter le robot.
+    final jwt = ref.read(jwtProvider);
+    if (jwt == null || jwt.isEmpty) {
+      _snack('Connectez-vous pour démarrer le robot');
+      _openLogin();
+      return;
+    }
     final token = ref.read(tokenProvider) ??
         await ref.read(secureStorageProvider).read(key: kTokenKey);
     if (token == null || token.isEmpty) {
@@ -45,7 +54,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     }
     setState(() => _busy = true);
     try {
-      final jwt = ref.read(jwtProvider);
       await _service.startBot(
         token: token,
         symbol: _symbol,
@@ -78,7 +86,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   Future<void> _stop() async {
     setState(() => _busy = true);
     try {
-      await _service.stopBot();
+      await _service.stopBot(jwt: ref.read(jwtProvider));
       _snack('Robot mis en pause');
     } on BotServiceException catch (e) {
       _snack(e.toString());
@@ -106,6 +114,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   void _openLogin() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+    );
+  }
+
+  void _openSignals() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SignalsScreen()),
+    );
+  }
+
+  void _openCopyTrading() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const CopyTradingScreen()),
     );
   }
 
@@ -161,6 +181,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final double pnl = (status['pnl'] as num?)?.toDouble() ?? 0.0;
     final double balance = (status['current_balance'] as num?)?.toDouble() ?? 0.0;
     final String currency = (status['currency'] as String?) ?? 'USD';
+    final bool isRealAccount = (status['account_type'] as String?) == 'real';
     final int won = (status['trades_won'] as num?)?.toInt() ?? 0;
     final int lost = (status['trades_lost'] as num?)?.toInt() ?? 0;
     final int total = won + lost;
@@ -175,6 +196,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           children: [
             _Header(
               isRunning: isActive,
+              isRealAccount: isRealAccount,
               pillText: pillText,
               pillColor: pillColor,
               isAdmin: isAdmin,
@@ -200,6 +222,30 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     _AccountTypeSwitch(
                       value: _accountType,
                       onChanged: (v) => setState(() => _accountType = v),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _ShortcutCard(
+                            icon: Icons.insights_rounded,
+                            label: 'ANALYSE',
+                            title: 'Signaux',
+                            color: AppColors.primarySoft,
+                            onTap: _openSignals,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _ShortcutCard(
+                            icon: Icons.groups_rounded,
+                            label: 'COMMUNAUTÉ',
+                            title: 'Copy trading',
+                            color: AppColors.success,
+                            onTap: _openCopyTrading,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 14),
                     _PnlCard(
@@ -268,6 +314,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 class _Header extends StatelessWidget {
   const _Header({
     required this.isRunning,
+    required this.isRealAccount,
     required this.pillText,
     required this.pillColor,
     required this.isAdmin,
@@ -278,6 +325,7 @@ class _Header extends StatelessWidget {
   });
 
   final bool isRunning;
+  final bool isRealAccount;
   final String pillText;
   final Color pillColor;
   final bool isAdmin;
@@ -301,7 +349,7 @@ class _Header extends StatelessWidget {
                 Text('Deriv Trading Bot',
                     style: AppTheme.heading(fontSize: 14.5, letterSpacing: -0.2)),
                 const SizedBox(height: 2),
-                Text('Compte démo · Deriv',
+                Text(isRealAccount ? 'Compte réel · Deriv' : 'Compte démo · Deriv',
                     style: GoogleFonts.manrope(
                         fontSize: 11, color: AppColors.textTertiary, fontWeight: FontWeight.w600, letterSpacing: 0.3)),
               ],
@@ -594,6 +642,64 @@ class _StrategyCard extends StatelessWidget {
             _MonoChip(text: '${stake.toStringAsFixed(2)} $currency', color: AppColors.textSecondary, bg: Colors.white.withValues(alpha: 0.05)),
             const SizedBox(width: 4),
             const Icon(Icons.chevron_right_rounded, color: AppColors.textTertiary, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Raccourci vers un écran secondaire (Signaux, Copy trading).
+class _ShortcutCard extends StatelessWidget {
+  const _ShortcutCard({
+    required this.icon,
+    required this.label,
+    required this.title,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String title;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadii.lg + 2),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        decoration: AppTheme.card(radius: AppRadii.lg + 2),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: color, size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: AppTheme.labelMicro().copyWith(fontSize: 10.5, letterSpacing: 0.8)),
+                  const SizedBox(height: 3),
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.heading(fontSize: 13.5, letterSpacing: -0.2),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),

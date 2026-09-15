@@ -3,7 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../services/auth_service.dart';
 import '../services/jwt_utils.dart';
-import 'bot_provider.dart';
+import 'storage_provider.dart';
 
 /// Clé de stockage sécurisé du JWT de session (auth backend applicatif).
 const String kJwtKey = 'auth_jwt';

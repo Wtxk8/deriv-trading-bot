@@ -6,23 +6,61 @@ Architecture:
 - `BotEngine`    : boucle d'exécution non-bloquante (asyncio.Task) pilotant une
                    stratégie simple (Rise/Fall ou Over/Under) via `DerivClient`.
 
+Un moteur porte UNE session d'UN utilisateur sur UN type de compte (démo ou
+réel) : `bot_manager.BotManager` crée un moteur neuf par session et par
+utilisateur.
+
 Toute la logique de risque est calculée côté serveur : dès que le seuil de perte
 ou de gain est franchi, la boucle est interrompue immédiatement.
+
+Événements émis (voir `trade_events`) : SessionEvent "started" puis "stopped"
+(une seule fois par session), TradeOpenedEvent après chaque achat réussi,
+TradeSettledEvent à chaque règlement. Ils sont livrés dans l'ordre d'émission
+par des tâches asyncio : un abonné lent ou en erreur ne bloque ni n'interrompt
+jamais la boucle de trading.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
 from deriv_client import DerivClient, DerivError
+from trade_events import (
+    SessionEvent,
+    SessionListener,
+    TradeOpenedEvent,
+    TradeOpenedListener,
+    TradeSettledEvent,
+    TradeSettledListener,
+)
 
 logger = logging.getLogger("bot_engine")
+
+# Types de compte Deriv acceptés.
+ACCOUNT_TYPES: frozenset[str] = frozenset({"demo", "real"})
+
+# Livraisons d'événements en cours. asyncio ne garde qu'une référence faible sur
+# les tâches : sans ce registre, une livraison pourrait être collectée avant sa
+# fin, notamment après la libération du moteur qui l'a émise.
+_PENDING_DELIVERIES: set[asyncio.Task[None]] = set()
+
+
+def normalize_account_type(account_type: str) -> str:
+    """Normalise un type de compte Deriv ("demo" | "real") ; ValueError sinon."""
+    value = str(account_type or "").strip().lower()
+    if value not in ACCOUNT_TYPES:
+        raise ValueError(
+            f"account_type invalide : {account_type!r} (attendu : demo | real)"
+        )
+    return value
 
 
 class BotState(str, Enum):
@@ -107,8 +145,26 @@ class RiskManager:
         return None
 
 
+async def _deliver(
+    listener: Callable[[Any], Awaitable[None]],
+    event: Any,
+    previous: Optional[asyncio.Task[None]],
+) -> None:
+    """Livre `event` une fois la livraison précédente terminée ; n'échoue jamais."""
+    if previous is not None and not previous.done():
+        await asyncio.wait({previous})
+    try:
+        await listener(event)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Abonné en erreur sur %s (user=%s) : événement ignoré",
+            type(event).__name__,
+            getattr(event, "user_id", None),
+        )
+
+
 class BotEngine:
-    """Moteur de trading : une seule session active à la fois."""
+    """Moteur de trading : une session active à la fois par instance."""
 
     def __init__(
         self,
@@ -119,8 +175,13 @@ class BotEngine:
         trade_cooldown: float = 1.0,
         trade_timeout: float = 120.0,
         max_history: int = 5,
+        *,
+        user_id: Optional[int] = None,
+        account_type: str = "demo",
+        on_trade_opened: Optional[TradeOpenedListener] = None,
+        on_trade_settled: Optional[TradeSettledListener] = None,
+        on_session: Optional[SessionListener] = None,
     ) -> None:
-        import os
         # app_id = Deriv-App-ID enregistré via api.deriv.com dashboard (PAT app).
         self._app_id: str = app_id or os.environ.get("DERIV_APP_ID", "")
         self._rest_base_url: str = rest_base_url
@@ -128,6 +189,19 @@ class BotEngine:
         self._trade_duration: int = trade_duration
         self._trade_cooldown: float = trade_cooldown
         self._trade_timeout: float = trade_timeout
+
+        # Propriétaire de la session et type de compte Deriv à utiliser.
+        self._user_id: Optional[int] = user_id
+        self._account_type: str = normalize_account_type(account_type)
+
+        # Abonnés aux événements (voir trade_events), appelés sans bloquer.
+        self._on_trade_opened: Optional[TradeOpenedListener] = on_trade_opened
+        self._on_trade_settled: Optional[TradeSettledListener] = on_trade_settled
+        self._on_session: Optional[SessionListener] = on_session
+        # Dernière livraison planifiée : la suivante l'attend (ordre garanti).
+        self._last_delivery: Optional[asyncio.Task[None]] = None
+        # Vrai entre l'émission de "started" et celle de "stopped".
+        self._session_open: bool = False
 
         self._client: Optional[DerivClient] = None
         self._task: Optional[asyncio.Task[None]] = None
@@ -161,6 +235,17 @@ class BotEngine:
         self._settlement: Optional[asyncio.Future[dict[str, Any]]] = None
 
     # ------------------------------------------------------------------
+    # Propriétés
+    # ------------------------------------------------------------------
+    @property
+    def user_id(self) -> Optional[int]:
+        return self._user_id
+
+    @property
+    def account_type(self) -> str:
+        return self._account_type
+
+    # ------------------------------------------------------------------
     # API publique de contrôle
     # ------------------------------------------------------------------
     async def start(
@@ -172,10 +257,12 @@ class BotEngine:
         take_profit: float,
         strategy_type: StrategyType | str = StrategyType.RISE_FALL,
     ) -> None:
-        """Démarre une session de trading. Idempotent-safe: refuse si active."""
+        """Démarre une session de trading. Refuse si une session est active."""
         async with self._lock:
-            if self._state == BotState.RUNNING:
+            if self._state in (BotState.RUNNING, BotState.PAUSED):
                 raise RuntimeError("Bot déjà en cours d'exécution")
+            # Réutilisation après une session terminée : libère l'ancienne connexion.
+            await self._teardown()
 
             self._symbol = symbol
             self._stake = float(stake)
@@ -196,18 +283,52 @@ class BotEngine:
                     "DERIV_APP_ID non configuré côté serveur — enregistrer une "
                     "app PAT sur api.deriv.com et fournir l'App ID via l'env."
                 )
-            self._client = DerivClient(
-                app_id=self._app_id, rest_base_url=self._rest_base_url
+            client = DerivClient(
+                app_id=self._app_id,
+                rest_base_url=self._rest_base_url,
+                preferred_account_type=self._account_type,
             )
-            await self._client.connect(pat_token=api_token)
-            info = self._client.account_info
-            self._currency = str(info.get("currency", "USD"))
-            self._start_balance = float(info.get("balance", 0.0))
+            self._client = client
+            try:
+                await client.connect(pat_token=api_token)
+                info = client.account_info
+                connected_type = str(info.get("account_type", "")).strip().lower()
+                if connected_type != self._account_type:
+                    # Garde-fou : ne jamais trader sur un autre type de compte
+                    # que celui demandé (démo demandée => jamais de réel).
+                    raise DerivError(
+                        "AccountTypeMismatch",
+                        f"Compte {connected_type or 'inconnu'} obtenu au lieu "
+                        f"d'un compte {self._account_type}",
+                    )
+                self._currency = str(info.get("currency", "USD"))
+                self._start_balance = float(info.get("balance", 0.0))
+            except BaseException:
+                # Aucune session ouverte : on libère la connexion éventuelle.
+                self._client = None
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    logger.exception("Erreur à la fermeture du client Deriv")
+                raise
 
             self._state = BotState.RUNNING
+            self._session_open = True
+            # Émis avant le lancement de la boucle : "started" précède donc
+            # tout TradeOpenedEvent de la session.
+            self._emit(
+                self._on_session,
+                SessionEvent(
+                    user_id=self._user_id,
+                    kind="started",
+                    account_type=self._account_type,
+                ),
+            )
             self._task = asyncio.create_task(self._run_loop())
             logger.info(
-                "Bot démarré: symbol=%s stake=%.2f SL=%.2f TP=%.2f strat=%s",
+                "Bot démarré: user=%s compte=%s symbol=%s stake=%.2f SL=%.2f TP=%.2f strat=%s",
+                self._user_id,
+                self._account_type,
                 symbol,
                 stake,
                 stop_loss,
@@ -216,12 +337,15 @@ class BotEngine:
             )
 
     async def stop(self) -> None:
-        """Arrête la session et libère les ressources."""
+        """Arrête la session et libère les ressources (idempotent)."""
         async with self._lock:
             if self._state not in _TERMINAL_STATES:
                 self._state = BotState.STOPPED
             await self._teardown()
-            logger.info("Bot arrêté (PnL=%.2f)", self._risk.pnl)
+            # La boucle émet "stopped" en sortant ; filet de sécurité si elle
+            # n'a jamais tourné (tâche annulée avant son premier pas).
+            self._close_session()
+            logger.info("Bot arrêté (user=%s, PnL=%.2f)", self._user_id, self._risk.pnl)
 
     async def pause(self) -> None:
         """Met la boucle en pause sans fermer la connexion."""
@@ -236,10 +360,17 @@ class BotEngine:
                 self._state = BotState.RUNNING
                 logger.info("Bot repris")
 
+    async def flush_events(self, timeout: Optional[float] = 5.0) -> None:
+        """Attend la livraison des événements déjà émis (arrêt serveur, tests)."""
+        last = self._last_delivery
+        if last is not None and not last.done():
+            await asyncio.wait({last}, timeout=timeout)
+
     def get_status(self) -> dict[str, Any]:
         """Snapshot léger de l'état (lecture synchrone, sûre en event-loop)."""
         return {
             "state": self._state.value,
+            "account_type": self._account_type,
             "symbol": self._symbol,
             "strategy": self._strategy.value,
             "stake": round(self._stake, 2),
@@ -303,12 +434,13 @@ class BotEngine:
             self._error_message = str(exc)
             logger.exception("Erreur moteur")
         finally:
-            with_client = self._client
-            if with_client is not None:
-                try:
-                    await with_client.forget_all("ticks", "proposal_open_contract")
-                except Exception:  # noqa: BLE001
-                    pass
+            try:
+                await self._release_client()
+            finally:
+                # Sortie de boucle = fin de session, quelle qu'en soit la cause.
+                if self._state not in _TERMINAL_STATES:
+                    self._state = BotState.STOPPED
+                self._close_session()
 
     # ------------------------------------------------------------------
     # Stratégie
@@ -358,6 +490,7 @@ class BotEngine:
         assert self._client is not None
         loop = asyncio.get_running_loop()
         self._settlement = loop.create_future()
+        duration_unit = "t"
 
         try:
             buy = await self._client.buy_proposal(
@@ -365,7 +498,7 @@ class BotEngine:
                 symbol=self._symbol,
                 amount=self._current_stake,
                 duration=self._trade_duration,
-                duration_unit="t",
+                duration_unit=duration_unit,
                 basis="stake",
                 currency=self._currency,
                 barrier=barrier,
@@ -379,6 +512,22 @@ class BotEngine:
         contract_id = int(buy["contract_id"])
         self._current_contract_id = contract_id
         buy_price = float(buy.get("buy_price", self._current_stake))
+        self._emit(
+            self._on_trade_opened,
+            TradeOpenedEvent(
+                user_id=self._user_id,
+                contract_id=contract_id,
+                contract_type=contract_type,
+                symbol=self._symbol,
+                stake=buy_price,
+                duration=self._trade_duration,
+                duration_unit=duration_unit,
+                barrier=barrier,
+                currency=self._currency,
+                account_type=self._account_type,
+                account_balance=self._start_balance + self._risk.pnl,
+            ),
+        )
 
         await self._client.proposal_open_contract(contract_id, subscribe=True)
 
@@ -423,6 +572,15 @@ class BotEngine:
             self._risk.pnl,
             self._current_stake,
         )
+        self._emit(
+            self._on_trade_settled,
+            TradeSettledEvent(
+                user_id=self._user_id,
+                contract_id=record.contract_id,
+                profit=profit,
+                payout=payout,
+            ),
+        )
 
     def _update_stake_after_trade(self, won: bool) -> None:
         """Ajuste la mise du prochain trade selon la stratégie."""
@@ -463,8 +621,57 @@ class BotEngine:
                 self._settlement.set_result(poc)
 
     # ------------------------------------------------------------------
+    # Événements
+    # ------------------------------------------------------------------
+    def _emit(
+        self, listener: Optional[Callable[[Any], Awaitable[None]]], event: Any
+    ) -> None:
+        """Planifie la livraison de `event` sans bloquer le moteur.
+
+        Chaque livraison attend la précédente : les abonnés reçoivent les
+        événements d'une session dans l'ordre (started < opened < settled <
+        stopped). Les exceptions des abonnés sont journalisées, jamais propagées.
+        """
+        if listener is None:
+            return
+        task = asyncio.create_task(_deliver(listener, event, self._last_delivery))
+        self._last_delivery = task
+        _PENDING_DELIVERIES.add(task)
+        task.add_done_callback(_PENDING_DELIVERIES.discard)
+
+    def _close_session(self) -> None:
+        """Émet SessionEvent "stopped", une seule fois par session démarrée."""
+        if not self._session_open:
+            return
+        self._session_open = False
+        self._emit(
+            self._on_session,
+            SessionEvent(
+                user_id=self._user_id,
+                kind="stopped",
+                account_type=self._account_type,
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # Nettoyage
     # ------------------------------------------------------------------
+    async def _release_client(self) -> None:
+        """Ferme la connexion Deriv de la session terminée.
+
+        La fermeture du WebSocket annule côté Deriv tous les abonnements de la
+        connexion (ticks, contrats) : pas besoin de forget_all au préalable.
+        """
+        client = self._client
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            logger.exception("Erreur à la fermeture du client Deriv")
+        if self._client is client:
+            self._client = None
+
     async def _teardown(self) -> None:
         if self._task is not None:
             self._task.cancel()
@@ -478,3 +685,8 @@ class BotEngine:
         if self._client is not None:
             await self._client.close()
             self._client = None
+
+
+def idle_status(account_type: str = "demo") -> dict[str, Any]:
+    """Snapshot d'un utilisateur sans session, au format exact de get_status()."""
+    return BotEngine(account_type=account_type).get_status()
