@@ -306,7 +306,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       case 'ERROR':
         return ('ERREUR', AppColors.danger);
       default:
-        return ('EN PAUSE', AppColors.warning);
+        // STOPPED (ou statut absent) : robot arrêté, pas « en pause ».
+        return ('ARRÊTÉ', AppColors.textTertiary);
     }
   }
 }

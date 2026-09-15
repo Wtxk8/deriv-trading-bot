@@ -336,9 +336,10 @@ class _PerformanceCard extends StatelessWidget {
           const SizedBox(height: 14),
           Row(
             children: [
-              Expanded(child: _MiniStat(label: 'TP ATTEINTS', value: count(overall.hitTp), color: AppColors.success)),
+              // Libellés courts (comme sur l'accueil) : « TP ATTEINTS » était tronqué.
+              Expanded(child: _MiniStat(label: 'GAGNÉS', value: count(overall.hitTp), color: AppColors.success)),
               const SizedBox(width: 10),
-              Expanded(child: _MiniStat(label: 'SL TOUCHÉS', value: count(overall.hitSl), color: AppColors.danger)),
+              Expanded(child: _MiniStat(label: 'PERDUS', value: count(overall.hitSl), color: AppColors.danger)),
               const SizedBox(width: 10),
               Expanded(
                   child: _MiniStat(label: 'EXPIRÉS', value: count(overall.expired), color: AppColors.textSecondary)),
