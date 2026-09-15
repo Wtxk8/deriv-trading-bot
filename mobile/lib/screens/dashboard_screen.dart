@@ -68,6 +68,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } on BotServiceException catch (e) {
       if (e.statusCode == 402) {
         _openPremium(reason: e.detail);
+      } else if (_isDerivTokenRejected(e)) {
+        _snackTokenRejected();
       } else {
         _snack(e.toString());
       }
@@ -76,6 +78,20 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Deriv refuse le token API (révoqué, expiré ou erroné) : le serveur relaie un 400 « Unauthorized ».
+  bool _isDerivTokenRejected(BotServiceException e) =>
+      e.statusCode == 400 &&
+      (e.detail.contains('Unauthorized') || e.detail.contains('Invalid or expired token'));
+
+  void _snackTokenRejected() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Deriv refuse votre token API : il est invalide, expiré ou révoqué.'),
+      duration: const Duration(seconds: 8),
+      action: SnackBarAction(label: 'Changer', onPressed: _logout),
+    ));
   }
 
   void _openPremium({String? reason}) {
