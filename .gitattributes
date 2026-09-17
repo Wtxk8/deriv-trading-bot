@@ -1,0 +1,19 @@
+# Fichiers binaires : aucune conversion de fin de ligne (core.autocrlf pourrait les corrompre).
+*.pdf      binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.webp     binary
+*.apk      binary
+*.aab      binary
+*.jar      binary
+*.jks      binary
+*.keystore binary
+*.db       binary
+*.ttf      binary
+*.otf      binary
+*.woff     binary
+*.woff2    binary
+*.zip      binary
