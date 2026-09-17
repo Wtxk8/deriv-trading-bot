@@ -313,10 +313,11 @@ class _PreferencesSummary extends StatelessWidget {
     final prefs = preferences;
     final enabled = prefs?.notify ?? true;
     final label = switch (prefs) {
-      null => 'Mes signaux : choisir les indices et stratégies',
+      // Libellés courts : l'icône de cloche indique déjà les notifications, et le
+      // lien « Modifier » réduit la place (« 3 strat… » était tronqué).
+      null => 'Choisir mes indices et stratégies',
       SignalPreferences(notify: false) => 'Notifications désactivées',
-      _ => 'Notifications : '
-          '${_countLabel(prefs.symbols.length, 'indice', 'indices', 'aucun indice')} · '
+      _ => '${_countLabel(prefs.symbols.length, 'indice', 'indices', 'aucun indice')} · '
           '${_countLabel(prefs.strategies.length, 'stratégie', 'stratégies', 'aucune stratégie')}',
     };
     return InkWell(
