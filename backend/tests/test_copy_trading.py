@@ -584,6 +584,95 @@ def test_daily_stop_loss_then_resume_next_day() -> None:
     asyncio.run(scenario())
 
 
+def test_stake_above_remaining_daily_budget_is_skipped_then_resumes_next_day(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level("INFO", logger="copy_trading")
+        deriv = FakeDeriv()
+        clock = FakeClock(datetime(2026, 9, 14, 22, 0, tzinfo=timezone.utc))
+        service, manager = new_service(deriv, clock)
+        master_id = make_master(service)
+        # Soldes égaux, multiplicateur 1 : mise suiveur = mise maître.
+        follower_id, token = await add_follower(
+            service, deriv, master_id, balance=1000.0, daily_stop_loss=3.0, max_stake=50.0
+        )
+
+        await manager.opened(trade_event(master_id, 401, stake=1.0))
+        [client] = deriv.live(token)
+        [trade] = copied(follower_id)
+        await client.push_settlement(trade.follower_contract_id, -1.0)
+        follow = follow_of(follower_id)
+        assert follow.today_pnl == -1.0 and follow.paused_reason is None
+
+        # Budget restant 3 - 1 = 2.00 < mise 2.50 : aucun achat, copie ignorée.
+        await manager.opened(trade_event(master_id, 402, stake=2.5))
+        assert len(client.buys) == 1
+        skipped = copied(follower_id)[-1]
+        assert skipped.status == "skipped" and skipped.master_contract_id == 402
+        assert skipped.stake == 0.0
+        assert skipped.reason == (
+            "stop loss journalier : mise 2.50 supérieure au budget de perte restant 2.00"
+        )
+        follow = follow_of(follower_id)
+        assert follow.paused_reason == "daily_stop_loss" and follow.today_pnl == -1.0
+        assert service.me(follower_id)["following"]["paused_reason"] == "daily_stop_loss"
+        assert token not in caplog.text
+
+        # Même jour : la pause tient, même pour une petite mise.
+        await manager.opened(trade_event(master_id, 403, stake=1.0))
+        assert len(client.buys) == 1
+        assert copied(follower_id)[-1].reason == "stop loss journalier atteint"
+
+        # Lendemain (UTC) : reprise ; mise égale au budget (3.00) autorisée.
+        clock.advance(hours=3)
+        assert service.me(follower_id)["following"]["paused_reason"] is None
+        await manager.opened(trade_event(master_id, 404, stake=3.0))
+        assert len(client.buys) == 2
+        assert [t.status for t in copied(follower_id)] == ["lost", "skipped", "skipped", "open"]
+        assert copied(follower_id)[-1].stake == 3.0
+        follow = follow_of(follower_id)
+        assert follow.paused_reason is None and follow.today_pnl == 0.0
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_open_copies_count_against_daily_budget_without_pausing() -> None:
+    async def scenario() -> None:
+        deriv = FakeDeriv()
+        clock = FakeClock(datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc))
+        service, manager = new_service(deriv, clock)
+        master_id = make_master(service)
+        follower_id, token = await add_follower(
+            service, deriv, master_id, balance=1000.0, daily_stop_loss=3.0, max_stake=50.0
+        )
+
+        # Copie de 2.50 achetée, pas encore réglée : perte potentielle de 2.50.
+        await manager.opened(trade_event(master_id, 501, stake=2.5))
+        [client] = deriv.live(token)
+        [first] = copied(follower_id)
+        assert first.status == "open" and len(client.buys) == 1
+
+        # Budget réalisé 3.00, mais 2.50 déjà engagés : reste 0.50 < mise 1.00.
+        await manager.opened(trade_event(master_id, 502, stake=1.0))
+        assert len(client.buys) == 1
+        skipped = copied(follower_id)[-1]
+        assert skipped.status == "skipped" and skipped.master_contract_id == 502
+        assert "copies en cours non réglées : 2.50" in skipped.reason
+        # Les copies en cours peuvent encore gagner : pas de pause pour la journée.
+        assert follow_of(follower_id).paused_reason is None
+
+        # La copie en cours se règle gagnante : le budget est libéré.
+        await client.push_settlement(first.follower_contract_id, 2.2)
+        await manager.opened(trade_event(master_id, 503, stake=1.0))
+        assert len(client.buys) == 2
+        assert copied(follower_id)[-1].status == "open"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_demo_master_is_not_copied_to_real_follower() -> None:
     async def scenario() -> None:
         deriv = FakeDeriv()

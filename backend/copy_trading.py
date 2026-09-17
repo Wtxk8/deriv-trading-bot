@@ -73,6 +73,9 @@ PAUSE_MASTER_DISABLED = "master_disabled"  # affichage seulement, jamais stocké
 REASON_MASTER_DEMO = "maitre en demo"
 REASON_DAILY_STOP_LOSS = "stop loss journalier atteint"
 
+# Tolérance flottante du contrôle « mise <= budget de perte restant du jour ».
+_RISK_EPSILON = 1e-9
+
 # Erreurs Deriv signifiant que le token (ou le compte demandé) est inutilisable.
 _FATAL_AUTH_CODES = frozenset(
     {"Unauthorized", "NoAccount", "InvalidToken", "AuthorizationRequired", "HTTP401", "HTTP403"}
@@ -531,7 +534,7 @@ class CopyTradingService:
         stake = compute_copy_stake(
             event.stake, event.account_balance, conn.balance, snap.multiplier, snap.max_stake
         )
-        trade_id = self._add_trade(snap, event, stake=stake, status=STATUS_OPEN)
+        trade_id = self._add_trade_within_budget(snap, event, stake)
         if trade_id is None:
             return
         try:
@@ -968,6 +971,81 @@ class CopyTradingService:
         try:
             with self._session_factory() as db:
                 trade = self._new_trade(snap, event, stake, status, reason, self._now())
+                db.add(trade)
+                db.commit()
+                return trade.id
+        except IntegrityError:
+            logger.warning(
+                "Contrat maître %s déjà copié pour follow=%s", event.contract_id, snap.id
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Enregistrement de la copie follow=%s en erreur", snap.id)
+        return None
+
+    def _add_trade_within_budget(
+        self, snap: _FollowSnapshot, event: TradeOpenedEvent, stake: float
+    ) -> Optional[int]:
+        """Enregistre la copie « open » si la mise tient dans le budget du jour.
+
+        Budget de perte restant = daily_stop_loss + today_pnl (après remise à
+        zéro du jour UTC), relu ici car un règlement a pu le modifier pendant la
+        connexion. Une mise qui le dépasse ferait franchir le stop loss
+        journalier : la copie est enregistrée en « skipped » et l'abonnement
+        passe en pause stop loss journalier (levée au changement de jour UTC).
+        Renvoie l'id de la copie à acheter, ou None s'il ne faut rien acheter.
+        """
+        now = self._now()
+        try:
+            with self._session_factory() as db:
+                follow = db.get(CopyFollow, snap.id)
+                if follow is None:
+                    return None
+                self._rollover(follow, now)
+                realized_budget = float(follow.daily_stop_loss) + float(follow.today_pnl)
+                # Les copies achetées mais pas encore réglées peuvent toutes perdre :
+                # leur mise est une perte potentielle à retrancher du budget.
+                open_exposure = float(
+                    db.scalar(
+                        select(func.coalesce(func.sum(CopiedTrade.stake), 0.0)).where(
+                            CopiedTrade.follow_id == follow.id,
+                            CopiedTrade.status == STATUS_OPEN,
+                        )
+                    )
+                    or 0.0
+                )
+                budget = realized_budget - open_exposure
+                if stake > budget + _RISK_EPSILON:
+                    # Pause pour la journée seulement si le budget RÉALISÉ est dépassé.
+                    # Si ce sont les copies en cours qui l'occupent, elles peuvent
+                    # encore gagner : on saute uniquement cette copie.
+                    exhausted = stake > realized_budget + _RISK_EPSILON
+                    if exhausted:
+                        reason = (
+                            f"stop loss journalier : mise {stake:.2f} supérieure au "
+                            f"budget de perte restant {max(realized_budget, 0.0):.2f}"
+                        )
+                    else:
+                        reason = (
+                            f"stop loss journalier : mise {stake:.2f} supérieure au budget "
+                            f"restant {max(budget, 0.0):.2f} (copies en cours non réglées : "
+                            f"{open_exposure:.2f})"
+                        )
+                    db.add(self._new_trade(follow, event, 0.0, STATUS_SKIPPED, reason, now))
+                    if exhausted and follow.paused_reason is None:
+                        follow.paused_reason = PAUSE_DAILY_STOP_LOSS
+                    db.commit()
+                    logger.info(
+                        "Copie ignorée, mise %.2f > budget restant %.2f (dont copies en "
+                        "cours %.2f) : follow=%s contrat maître=%s%s",
+                        stake,
+                        budget,
+                        open_exposure,
+                        snap.id,
+                        event.contract_id,
+                        " (pause stop loss journalier)" if exhausted else "",
+                    )
+                    return None
+                trade = self._new_trade(follow, event, stake, STATUS_OPEN, None, now)
                 db.add(trade)
                 db.commit()
                 return trade.id

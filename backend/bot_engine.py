@@ -47,6 +47,9 @@ logger = logging.getLogger("bot_engine")
 # Types de compte Deriv acceptés.
 ACCOUNT_TYPES: frozenset[str] = frozenset({"demo", "real"})
 
+# Tolérance flottante du contrôle « mise <= budget de perte restant ».
+_RISK_EPSILON = 1e-9
+
 # Livraisons d'événements en cours. asyncio ne garde qu'une référence faible sur
 # les tâches : sans ce registre, une livraison pourrait être collectée avant sa
 # fin, notamment après la libération du moteur qui l'a émise.
@@ -135,6 +138,17 @@ class RiskManager:
             self.trades_won += 1
         else:
             self.trades_lost += 1
+
+    def remaining_loss_budget(self) -> float:
+        """Perte encore permise avant le stop loss : stop_loss + PnL de session."""
+        return abs(self.stop_loss) + self.pnl
+
+    def stake_exceeds_budget(self, stake: float) -> bool:
+        """Vrai si perdre `stake` ferait passer le PnL sous -stop_loss.
+
+        Une mise égale au budget restant reste autorisée (tolérance flottante).
+        """
+        return stake > self.remaining_loss_budget() + _RISK_EPSILON
 
     def breached_state(self) -> Optional[BotState]:
         """Retourne l'état terminal si un seuil est franchi, sinon None."""
@@ -402,6 +416,20 @@ class BotEngine:
                 if self._state == BotState.PAUSED:
                     await asyncio.sleep(0.5)
                     continue
+                # Contrôle AVANT achat : le seuil n'est évalué qu'après règlement,
+                # une mise supérieure au budget restant ferait donc dépasser le
+                # stop loss (jusqu'au plafond Martingale). On s'arrête avant.
+                if self._risk.stake_exceeds_budget(self._current_stake):
+                    self._state = BotState.STOP_LOSS_REACHED
+                    logger.warning(
+                        "Stop loss : prochaine mise %.2f > budget restant %.2f, "
+                        "arrêt avant dépassement (PnL=%.2f)",
+                        self._current_stake,
+                        self._risk.remaining_loss_budget(),
+                        self._risk.pnl,
+                    )
+                    break
+
                 if len(self._ticks) < self._min_ticks:
                     await asyncio.sleep(0.3)
                     continue

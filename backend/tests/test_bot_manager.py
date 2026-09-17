@@ -539,6 +539,8 @@ class FakeDerivBackend:
         # Cotations croissantes : la stratégie Rise/Fall décide CALLE.
         self.quotes: list[float] = [round(100.0 + 0.1 * i, 2) for i in range(12)]
         self.profit: float = 0.95
+        # Profits successifs des trades (consommés dans l'ordre), puis `profit`.
+        self.profits: list[float] = []
         self.account_type: str | None = None  # None : le type demandé
         self.subscribe_error: BaseException | None = None
         self.clients: list[FakeDerivClient] = []
@@ -604,12 +606,13 @@ class FakeDerivClient:
 
     async def proposal_open_contract(self, contract_id: int, subscribe: bool = True) -> dict[str, Any]:
         order = self.orders[-1]
+        profit = self.backend.profits.pop(0) if self.backend.profits else self.backend.profit
         poc = {
             "contract_id": contract_id,
             "contract_type": order["contract_type"],
             "is_sold": 1,
-            "profit": self.backend.profit,
-            "payout": round(order["amount"] + self.backend.profit, 2),
+            "profit": profit,
+            "payout": round(order["amount"] + profit, 2),
         }
         task = asyncio.create_task(self.callbacks["proposal_open_contract"]({"proposal_open_contract": poc}))
         self._tasks.add(task)
@@ -724,6 +727,135 @@ def test_engine_arret_manuel_emet_stopped_une_seule_fois(
     assert client.init_kwargs["preferred_account_type"] == "demo"
     assert client.orders == []
     assert client.closed
+
+
+def _run_until_stop_loss(
+    fake_deriv: FakeDerivBackend, *, stake: float, stop_loss: float, strategy_type: str
+) -> tuple[BotEngine, list[Any]]:
+    """Session jusqu'à l'arrêt automatique, puis deux arrêts manuels sans effet."""
+
+    async def scenario() -> tuple[BotEngine, list[Any]]:
+        events: list[Any] = []
+        stopped = asyncio.Event()
+        engine = _make_engine(events, stopped=stopped, user_id=9, account_type="demo")
+        await engine.start(
+            api_token="faux-token", symbol="R_75", stake=stake,
+            stop_loss=stop_loss, take_profit=1000.0, strategy_type=strategy_type,
+        )
+        await asyncio.wait_for(stopped.wait(), timeout=5.0)
+        await engine.stop()
+        await engine.stop()
+        await engine.flush_events()
+        return engine, events
+
+    return run(scenario())
+
+
+def _assert_stop_loss_jamais_depasse(events: list[Any], stop_loss: float) -> None:
+    """Chaque achat tenait dans le budget restant ; "stopped" émis une seule fois."""
+    pnl = 0.0
+    for event in events:
+        if isinstance(event, TradeOpenedEvent):
+            assert event.stake <= stop_loss + pnl + 1e-9, (event.stake, pnl)
+        elif isinstance(event, TradeSettledEvent):
+            pnl += event.profit
+            assert pnl >= -stop_loss - 1e-9
+    kinds = [event.kind for event in events if isinstance(event, SessionEvent)]
+    assert kinds == ["started", "stopped"]
+    assert isinstance(events[-1], SessionEvent)
+
+
+def test_engine_stop_loss_mise_fixe_arret_avant_depassement(
+    fake_deriv: FakeDerivBackend, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Cas de production : PnL -9.72 puis une mise de 1.00 aurait mené à -10.72.
+    fake_deriv.profits = [0.28] + [-1.0] * 15
+    caplog.set_level("WARNING", logger="bot_engine")
+
+    engine, events = _run_until_stop_loss(
+        fake_deriv, stake=1.0, stop_loss=10.0, strategy_type="RISE_FALL"
+    )
+
+    [client] = fake_deriv.clients
+    assert len(client.orders) == 11  # 1 gain + 10 pertes, aucun 12e achat
+    assert all(order["amount"] == 1.0 for order in client.orders)
+    status = engine.get_status()
+    assert status["state"] == "STOP_LOSS_REACHED"
+    assert status["pnl"] == pytest.approx(-9.72)
+    assert status["trades_total"] == 11
+    assert client.closed
+    _assert_stop_loss_jamais_depasse(events, 10.0)
+    assert sum(isinstance(e, TradeOpenedEvent) for e in events) == 11
+    assert "prochaine mise 1.00 > budget restant 0.28" in caplog.text
+    assert "faux-token" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("stop_loss", "expected_orders", "expected_pnl"),
+    [
+        (10.0, 10, -10.0),  # 10e mise = budget restant (1.00) : autorisée
+        (9.5, 9, -9.0),  # budget restant 0.50 < mise 1.00 : arrêt avant achat
+    ],
+)
+def test_engine_stop_loss_mise_egale_au_budget_autorisee(
+    fake_deriv: FakeDerivBackend, stop_loss: float, expected_orders: int, expected_pnl: float
+) -> None:
+    fake_deriv.profits = [-1.0] * 15
+
+    engine, events = _run_until_stop_loss(
+        fake_deriv, stake=1.0, stop_loss=stop_loss, strategy_type="RISE_FALL"
+    )
+
+    [client] = fake_deriv.clients
+    assert len(client.orders) == expected_orders
+    status = engine.get_status()
+    assert status["state"] == "STOP_LOSS_REACHED"
+    assert status["pnl"] == pytest.approx(expected_pnl)
+    assert status["pnl"] >= -stop_loss
+    _assert_stop_loss_jamais_depasse(events, stop_loss)
+
+
+@pytest.mark.parametrize(
+    ("stop_loss", "expected_stakes", "expected_pnl"),
+    [
+        (10.0, [1.0, 2.0, 4.0], -7.0),  # mise 8 > budget 3 : arrêt avant achat
+        (15.0, [1.0, 2.0, 4.0, 8.0], -15.0),  # mise 8 = budget 8 : autorisée
+    ],
+)
+def test_engine_stop_loss_martingale_arret_avant_depassement(
+    fake_deriv: FakeDerivBackend,
+    stop_loss: float,
+    expected_stakes: list[float],
+    expected_pnl: float,
+) -> None:
+    # Pertes égales à la mise : 1, 2, 4, 8, 16, 32...
+    fake_deriv.profits = [-float(2**i) for i in range(8)]
+
+    engine, events = _run_until_stop_loss(
+        fake_deriv, stake=1.0, stop_loss=stop_loss, strategy_type="MARTINGALE"
+    )
+
+    [client] = fake_deriv.clients
+    assert [order["amount"] for order in client.orders] == expected_stakes
+    status = engine.get_status()
+    assert status["state"] == "STOP_LOSS_REACHED"
+    assert status["pnl"] == pytest.approx(expected_pnl)
+    assert status["pnl"] >= -stop_loss
+    _assert_stop_loss_jamais_depasse(events, stop_loss)
+
+
+def test_engine_mise_initiale_superieure_au_stop_loss_aucun_achat(
+    fake_deriv: FakeDerivBackend,
+) -> None:
+    engine, events = _run_until_stop_loss(
+        fake_deriv, stake=5.0, stop_loss=2.0, strategy_type="RISE_FALL"
+    )
+
+    [client] = fake_deriv.clients
+    assert client.orders == []
+    assert client.closed
+    assert engine.get_status()["state"] == "STOP_LOSS_REACHED"
+    assert [event.kind for event in events] == ["started", "stopped"]
 
 
 def test_engine_erreur_deriv_termine_la_session(fake_deriv: FakeDerivBackend) -> None:
