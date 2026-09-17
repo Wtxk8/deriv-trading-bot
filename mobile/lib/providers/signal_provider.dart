@@ -26,6 +26,8 @@ class SignalsState {
     this.stats,
     this.loading = false,
     this.error,
+    this.preferences,
+    this.preferencesLoaded = false,
   });
 
   /// Essai actif, Premium actif ou admin : signaux en cours visibles.
@@ -42,6 +44,14 @@ class SignalsState {
   final bool loading;
   final String? error;
 
+  /// Indices et stratégies suivis. Null tant que ni GET /signals/preferences ni `hello`
+  /// ne les ont fournis (aucun filtre local dans ce cas : le serveur filtre déjà).
+  final SignalPreferences? preferences;
+
+  /// Préférences et catalogue confirmés par GET ou PUT /signals/preferences
+  /// (le `hello` ne transmet que les choix, sans la liste des indices disponibles).
+  final bool preferencesLoaded;
+
   SignalsState copyWith({
     bool? liveAccess,
     bool? accessKnown,
@@ -50,6 +60,8 @@ class SignalsState {
     bool? loading,
     String? error,
     bool clearError = false,
+    SignalPreferences? preferences,
+    bool? preferencesLoaded,
   }) {
     return SignalsState(
       liveAccess: liveAccess ?? this.liveAccess,
@@ -58,6 +70,8 @@ class SignalsState {
       stats: stats ?? this.stats,
       loading: loading ?? this.loading,
       error: clearError ? null : (error ?? this.error),
+      preferences: preferences ?? this.preferences,
+      preferencesLoaded: preferencesLoaded ?? this.preferencesLoaded,
     );
   }
 }
@@ -79,6 +93,11 @@ class SignalsNotifier extends StateNotifier<SignalsState> {
   StreamSubscription<SignalEvent>? _subscription;
   Timer? _statsDebounce;
   Future<void>? _refreshing;
+  Future<String?>? _preferencesLoading;
+
+  /// Incrémenté à chaque PUT réussi : une lecture lancée avant ne l'écrase pas.
+  int _preferencesRevision = 0;
+  bool _savingPreferences = false;
 
   /// Événements reçus avant l'instantané REST initial : appliqués ensuite.
   final List<SignalEvent> _pending = <SignalEvent>[];
@@ -113,6 +132,7 @@ class SignalsNotifier extends StateNotifier<SignalsState> {
   Future<void> _load({required bool silent}) async {
     if (!silent) state = state.copyWith(loading: true);
     final statsDone = _loadStats();
+    final preferencesDone = loadPreferences();
     try {
       final feed = await _service.fetchSignals(_jwt, limit: 50);
       if (!mounted) return;
@@ -130,6 +150,70 @@ class SignalsNotifier extends StateNotifier<SignalsState> {
       state = state.copyWith(loading: false, error: _messageFor(e));
     }
     await statsDone;
+    await preferencesDone;
+  }
+
+  /// GET /signals/preferences. Renvoie null en cas de succès, sinon un message lisible.
+  Future<String?> loadPreferences() {
+    if (_jwt.isEmpty) return Future<String?>.value('Connectez-vous pour choisir vos signaux.');
+    return _preferencesLoading ??= _fetchPreferences().whenComplete(() => _preferencesLoading = null);
+  }
+
+  Future<String?> _fetchPreferences() async {
+    final revision = _preferencesRevision;
+    try {
+      final preferences = await _service.fetchPreferences(_jwt);
+      // Un enregistrement a eu lieu (ou est en cours) pendant la lecture : il fait foi.
+      if (mounted && !_savingPreferences && revision == _preferencesRevision) {
+        state = state.copyWith(preferences: preferences, preferencesLoaded: true);
+      }
+      return null;
+    } catch (e) {
+      return _messageFor(e);
+    }
+  }
+
+  /// PUT /signals/preferences puis mise à jour de l'état. Le flux WebSocket relit les
+  /// préférences à chaque signal : aucune reconnexion nécessaire.
+  /// Renvoie null en cas de succès, sinon un message lisible.
+  Future<String?> updatePreferences({
+    required List<String> symbols,
+    required List<String> strategies,
+    required bool notify,
+  }) async {
+    if (_jwt.isEmpty) return 'Connectez-vous pour choisir vos signaux.';
+    _savingPreferences = true;
+    try {
+      final preferences = await _service.updatePreferences(
+        _jwt,
+        symbols: symbols,
+        strategies: strategies,
+        notify: notify,
+      );
+      _preferencesRevision++;
+      if (mounted) state = state.copyWith(preferences: preferences, preferencesLoaded: true);
+      return null;
+    } catch (e) {
+      return _messageFor(e);
+    } finally {
+      _savingPreferences = false;
+    }
+  }
+
+  /// Choix transmis par `hello` (sans catalogue) : fusionnés avec l'état courant.
+  void _applyHelloPreferences(SignalHello hello) {
+    if (hello.symbols == null && hello.strategies == null && hello.notify == null) return;
+    if (_savingPreferences) return; // la réponse du PUT fera foi
+    final base = state.preferences ?? SignalPreferences.fromJson(const <String, dynamic>{});
+    state = state.copyWith(
+      preferences: base.copyWith(symbols: hello.symbols, strategies: hello.strategies, notify: hello.notify),
+    );
+  }
+
+  /// Défense en profondeur : le serveur ne pousse déjà que les signaux choisis.
+  bool _shouldNotify(Signal signal) {
+    final preferences = state.preferences;
+    return preferences == null || (preferences.notify && preferences.matches(signal));
   }
 
   Future<void> _loadStats() async {
@@ -177,17 +261,18 @@ class SignalsNotifier extends StateNotifier<SignalsState> {
   void _apply(SignalEvent event) {
     if (!mounted) return;
     switch (event) {
-      case SignalHello(:final liveAccess):
+      case SignalHello(:final liveAccess) && final hello:
         _helloCount++;
         _streamLiveAccess = liveAccess;
         if (liveAccess == _restLiveAccess) _rightsRestartDone = false;
         final gained = liveAccess && !state.liveAccess;
         state = state.copyWith(liveAccess: liveAccess, accessKnown: true);
+        _applyHelloPreferences(hello);
         // Reconnexion ou accès au direct obtenu : rattrapage des signaux manqués.
         if (_helloCount > 1 || gained) unawaited(refresh(silent: true));
       case SignalCreated(:final signal):
         _upsert(signal);
-        if (signal.isActive && _notified.add(signal.id)) {
+        if (signal.isActive && _shouldNotify(signal) && _notified.add(signal.id)) {
           unawaited(_notifications.showSignal(signal));
         }
       case SignalUpdated(:final signal):

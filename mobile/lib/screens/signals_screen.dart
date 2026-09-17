@@ -42,7 +42,26 @@ class _SignalsScreenState extends ConsumerState<SignalsScreen> {
 
   /// Android 13+ : la demande n'a de sens que si des signaux en direct peuvent arriver.
   void _askNotificationPermission() {
+    // Notifications désactivées dans « Mes signaux » : inutile de demander la permission.
+    if (ref.read(signalsProvider).preferences?.notify == false) return;
     unawaited(ref.read(notificationServiceProvider).requestPermission());
+  }
+
+  /// Panneau « Mes signaux » : indices, stratégies et notifications suivis.
+  Future<void> _openPreferences() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: AppColors.bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (_) => const _PreferencesSheet(),
+    );
+    if (saved != true || !mounted) return;
+    messenger.showSnackBar(const SnackBar(content: Text('Préférences enregistrées')));
+    if (ref.read(signalsProvider).liveAccess) _askNotificationPermission();
   }
 
   Future<void> _refresh() => ref.read(signalsProvider.notifier).refresh();
@@ -95,6 +114,13 @@ class _SignalsScreenState extends ConsumerState<SignalsScreen> {
       appBar: AppBar(
         title: Text('Signaux', style: AppTheme.heading(fontSize: 15, letterSpacing: -0.2)),
         actions: [
+          if (isLoggedIn)
+            IconButton(
+              icon: const Icon(Icons.tune_rounded),
+              tooltip: 'Mes signaux',
+              color: AppColors.textSecondary,
+              onPressed: () => unawaited(_openPreferences()),
+            ),
           if (accessKnown)
             Padding(
               padding: const EdgeInsets.only(right: 16),
@@ -115,6 +141,14 @@ class _SignalsScreenState extends ConsumerState<SignalsScreen> {
               padding: EdgeInsets.fromLTRB(20, 4, 20, 10),
               child: _DisclaimerBanner(),
             ),
+            if (isLoggedIn)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                child: _PreferencesSummary(
+                  preferences: state.preferences,
+                  onTap: () => unawaited(_openPreferences()),
+                ),
+              ),
             Expanded(
               child: RefreshIndicator(
                 onRefresh: _refresh,
@@ -261,6 +295,435 @@ class _DisclaimerBanner extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+String _countLabel(int count, String singular, String plural, String none) =>
+    count == 0 ? none : '$count ${count == 1 ? singular : plural}';
+
+/// Résumé des choix « Mes signaux », sous l'avertissement ; ouvre le panneau.
+class _PreferencesSummary extends StatelessWidget {
+  const _PreferencesSummary({required this.preferences, required this.onTap});
+  final SignalPreferences? preferences;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final prefs = preferences;
+    final enabled = prefs?.notify ?? true;
+    final label = switch (prefs) {
+      null => 'Mes signaux : choisir les indices et stratégies',
+      SignalPreferences(notify: false) => 'Notifications désactivées',
+      _ => 'Notifications : '
+          '${_countLabel(prefs.symbols.length, 'indice', 'indices', 'aucun indice')} · '
+          '${_countLabel(prefs.strategies.length, 'stratégie', 'stratégies', 'aucune stratégie')}',
+    };
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadii.md),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: AppTheme.card(radius: AppRadii.md),
+        child: Row(
+          children: [
+            Icon(
+              enabled ? Icons.notifications_active_outlined : Icons.notifications_off_outlined,
+              size: 18,
+              color: enabled ? AppColors.primarySoft : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.manrope(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text('Modifier',
+                style: GoogleFonts.manrope(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primarySoft)),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.primarySoft),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bottom sheet « Mes signaux » : notifications, indices et stratégies suivis.
+class _PreferencesSheet extends ConsumerStatefulWidget {
+  const _PreferencesSheet();
+
+  @override
+  ConsumerState<_PreferencesSheet> createState() => _PreferencesSheetState();
+}
+
+class _PreferencesSheetState extends ConsumerState<_PreferencesSheet> {
+  Set<String> _symbols = <String>{};
+  Set<String> _strategies = <String>{};
+  bool _notify = true;
+  bool _touched = false; // l'utilisateur a modifié un choix : ne plus réinitialiser
+  bool _loading = false;
+  bool _saving = false;
+  String? _loadError;
+  String? _saveError;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = ref.read(signalsProvider);
+    final prefs = state.preferences;
+    if (prefs != null) _initFrom(prefs);
+    // Le catalogue des indices disponibles n'arrive que par GET /signals/preferences.
+    if (!state.preferencesLoaded) unawaited(_load());
+  }
+
+  void _initFrom(SignalPreferences prefs) {
+    _symbols = {...prefs.symbols};
+    _strategies = {...prefs.strategies};
+    _notify = prefs.notify;
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    final error = await ref.read(signalsProvider.notifier).loadPreferences();
+    if (!mounted) return;
+    final state = ref.read(signalsProvider);
+    final prefs = state.preferences;
+    setState(() {
+      _loading = false;
+      if (state.preferencesLoaded && prefs != null) {
+        if (!_touched) _initFrom(prefs);
+      } else {
+        _loadError = error ?? 'Impossible de charger vos préférences.';
+      }
+    });
+  }
+
+  void _edit(VoidCallback change) {
+    if (_saving) return;
+    setState(() {
+      _touched = true;
+      _saveError = null;
+      change();
+    });
+  }
+
+  Future<void> _save(SignalPreferences prefs) async {
+    setState(() {
+      _saving = true;
+      _saveError = null;
+    });
+    final error = await ref.read(signalsProvider.notifier).updatePreferences(
+          // Ordre du catalogue ; seuls les indices et stratégies encore proposés sont envoyés.
+          symbols: [
+            for (final o in prefs.availableSymbols)
+              if (_symbols.contains(o.symbol)) o.symbol,
+          ],
+          strategies: [
+            for (final o in prefs.availableStrategies)
+              if (_strategies.contains(o.key)) o.key,
+          ],
+          notify: _notify,
+        );
+    if (!mounted) return;
+    if (error != null) {
+      setState(() {
+        _saving = false;
+        _saveError = error;
+      });
+      return;
+    }
+    Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final state = ref.watch(signalsProvider);
+    final prefs = state.preferences;
+    final ready = state.preferencesLoaded && prefs != null;
+    final subtitle = state.accessKnown && !state.liveAccess
+        ? 'Vos choix seront appliqués aux signaux en direct dès le passage au Premium.'
+        : 'Seuls les signaux de ces indices et stratégies vous sont envoyés en direct.';
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: SafeArea(
+        top: false,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: media.size.height * 0.9),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 10, 22, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 42,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                Text('Mes signaux', style: AppTheme.heading(fontSize: 21, letterSpacing: -0.5)),
+                const SizedBox(height: 4),
+                Text(subtitle,
+                    style: GoogleFonts.manrope(fontSize: 12, color: AppColors.textTertiary, height: 1.35)),
+                const SizedBox(height: 14),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: ready ? _form(prefs) : _placeholder(),
+                  ),
+                ),
+                if (ready) ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 54,
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.primary.withValues(alpha: 0.16),
+                        foregroundColor: AppColors.primarySoft,
+                        disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.10),
+                        disabledForegroundColor: AppColors.primarySoft,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadii.lg - 2)),
+                      ),
+                      onPressed: _saving ? null : () => unawaited(_save(prefs)),
+                      child: _saving
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2.4, color: AppColors.primarySoft),
+                            )
+                          : Text('Enregistrer', style: GoogleFonts.manrope(fontSize: 15, fontWeight: FontWeight.w800)),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _placeholder() {
+    final error = _loadError;
+    if (error != null && !_loading) {
+      return _MessageCard(
+        icon: Icons.cloud_off_rounded,
+        color: AppColors.danger,
+        title: 'Préférences indisponibles',
+        subtitle: error,
+        cta: 'Réessayer',
+        onTap: () => unawaited(_load()),
+      );
+    }
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 36),
+      child: Center(child: CircularProgressIndicator(color: AppColors.primary)),
+    );
+  }
+
+  Widget _form(SignalPreferences prefs) {
+    final allSymbols = [for (final o in prefs.availableSymbols) o.symbol];
+    final allStrategies = [for (final o in prefs.availableStrategies) o.key];
+    final hasSymbol = allSymbols.any(_symbols.contains);
+    final hasStrategy = allStrategies.any(_strategies.contains);
+    final saveError = _saveError;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionCard(
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Recevoir les notifications',
+                        style: GoogleFonts.manrope(
+                            fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                    const SizedBox(height: 3),
+                    Text('Une alerte à chaque nouveau signal correspondant à vos choix.',
+                        style: GoogleFonts.manrope(fontSize: 11.5, color: AppColors.textTertiary, height: 1.35)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Switch(
+                value: _notify,
+                onChanged: (v) => _edit(() => _notify = v),
+                thumbColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.selected) ? AppColors.success : AppColors.textTertiary,
+                ),
+                trackColor: WidgetStateProperty.resolveWith(
+                  (states) => states.contains(WidgetState.selected)
+                      ? AppColors.success.withValues(alpha: 0.35)
+                      : AppColors.surfaceHigh,
+                ),
+                trackOutlineColor: const WidgetStatePropertyAll(AppColors.border),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        _sectionCard(
+          title: 'INDICES',
+          onAll: () => _edit(() => _symbols = {...allSymbols}),
+          onNone: () => _edit(() => _symbols = <String>{}),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final o in prefs.availableSymbols)
+                _chip(
+                  o.name,
+                  selected: _symbols.contains(o.symbol),
+                  onSelected: (v) => _edit(() => v ? _symbols.add(o.symbol) : _symbols.remove(o.symbol)),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        _sectionCard(
+          title: 'STRATÉGIES',
+          onAll: () => _edit(() => _strategies = {...allStrategies}),
+          onNone: () => _edit(() => _strategies = <String>{}),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final o in prefs.availableStrategies)
+                    _chip(
+                      o.label,
+                      selected: _strategies.contains(o.key),
+                      onSelected: (v) => _edit(() => v ? _strategies.add(o.key) : _strategies.remove(o.key)),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded, size: 14, color: AppColors.textTertiary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text('Spike : Boom et Crash uniquement',
+                        style: GoogleFonts.manrope(fontSize: 11.5, color: AppColors.textTertiary)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        if (!hasSymbol || !hasStrategy) ...[
+          const SizedBox(height: 12),
+          _notice(
+            Icons.warning_amber_rounded,
+            AppColors.warning,
+            'Sans indice ou sans stratégie, vous ne recevrez aucun signal en direct.',
+          ),
+        ],
+        if (saveError != null) ...[
+          const SizedBox(height: 12),
+          _notice(Icons.error_outline_rounded, AppColors.danger, 'Enregistrement impossible : $saveError'),
+        ],
+      ],
+    );
+  }
+
+  Widget _sectionCard({String? title, VoidCallback? onAll, VoidCallback? onNone, required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: AppTheme.card(radius: AppRadii.lg + 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (title != null) ...[
+            Row(
+              children: [
+                Text(title, style: AppTheme.labelMicro().copyWith(fontSize: 11, letterSpacing: 0.8)),
+                const Spacer(),
+                if (onAll != null) _link('Tout', onAll),
+                if (onNone != null) ...[
+                  const SizedBox(width: 4),
+                  _link('Aucun', onNone),
+                ],
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _link(String label, VoidCallback onTap) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Text(label,
+            style: GoogleFonts.manrope(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primarySoft)),
+      ),
+    );
+  }
+
+  Widget _chip(String label, {required bool selected, required ValueChanged<bool> onSelected}) {
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: onSelected,
+      showCheckmark: true,
+      checkmarkColor: AppColors.primarySoft,
+      selectedColor: AppColors.primary.withValues(alpha: 0.18),
+      backgroundColor: Colors.white.withValues(alpha: 0.04),
+      side: BorderSide(
+        color: selected ? AppColors.primary.withValues(alpha: 0.5) : AppColors.border,
+        width: 1,
+      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+      labelStyle: GoogleFonts.manrope(
+        fontSize: 12.5,
+        fontWeight: FontWeight.w700,
+        color: selected ? AppColors.primarySoft : AppColors.textSecondary,
+      ),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
+  Widget _notice(IconData icon, Color color, String message) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(icon, size: 16, color: color),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(message,
+              style: GoogleFonts.manrope(fontSize: 12, fontWeight: FontWeight.w600, color: color, height: 1.35)),
+        ),
+      ],
     );
   }
 }

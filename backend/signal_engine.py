@@ -46,6 +46,14 @@ logger = logging.getLogger("signal_engine")
 
 PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 DEFAULT_SYMBOLS: tuple[str, ...] = ("R_75", "R_100", "BOOM1000", "CRASH1000", "BOOM500", "CRASH500")
+DEFAULT_SYMBOL_NAMES: dict[str, str] = {
+    "R_75": "Volatility 75 Index",
+    "R_100": "Volatility 100 Index",
+    "BOOM1000": "Boom 1000 Index",
+    "CRASH1000": "Crash 1000 Index",
+    "BOOM500": "Boom 500 Index",
+    "CRASH500": "Crash 500 Index",
+}
 
 STRATEGIES: tuple[str, ...] = ("MA_CROSS", "RSI", "SPIKE")
 TIMEFRAME = "1m"
@@ -417,6 +425,16 @@ class SignalEngine:
         self._stopping = False
         self._req_seq = 0
         self.connected = False
+
+    def symbol_catalog(self) -> list[dict[str, str]]:
+        """Symboles suivis et leur nom lisible (nom par défaut avant active_symbols)."""
+        catalog: list[dict[str, str]] = []
+        for symbol in self.symbols:
+            name = self._states[symbol].name
+            if not name or name == symbol:
+                name = DEFAULT_SYMBOL_NAMES.get(symbol, symbol)
+            catalog.append({"symbol": symbol, "name": name})
+        return catalog
 
     # ----- diffusion -----
 

@@ -743,6 +743,9 @@ SAMPLE_CLOSED = {**SAMPLE_ACTIVE, "status": "hit_tp", "closed_at": "2030-01-01T1
                  "close_price": 104.0}
 
 
+ALL_R_75 = {"symbols": ["R_75"], "strategies": ["MA_CROSS", "RSI", "SPIKE"], "notify": True}
+
+
 def _authenticate(ws, user) -> dict:
     ws.send_json({"type": "auth", "token": auth.create_access_token(user)})
     assert ws.receive_json()["type"] == "auth_ok"
@@ -755,7 +758,9 @@ def test_ws_live_recoit_signaux_et_mises_a_jour(make_user, make_app):
     user = make_user(trial_started_at=datetime.now(UTC))
     with TestClient(app) as client:
         with client.websocket_connect("/ws/signals") as ws:
-            assert _authenticate(ws, user) == {"type": "hello", "live_access": True}
+            assert _authenticate(ws, user) == {
+                "type": "hello", "live_access": True, "preferences": ALL_R_75,
+            }
             assert engine.hub.subscriber_count == 1
             client.portal.call(engine.hub.publish, {"type": "signal", "signal": SAMPLE_ACTIVE})
             assert ws.receive_json() == {"type": "signal", "signal": SAMPLE_ACTIVE}
@@ -776,7 +781,9 @@ def test_ws_non_live_ne_recoit_que_les_signaux_clos(make_user, make_app):
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/signals") as ws:
-            assert _authenticate(ws, user) == {"type": "hello", "live_access": False}
+            assert _authenticate(ws, user) == {
+                "type": "hello", "live_access": False, "preferences": ALL_R_75,
+            }
             client.portal.call(burst)
             assert ws.receive_json() == {"type": "update", "signal": SAMPLE_CLOSED}
         wait_until(lambda: engine.hub.subscriber_count == 0)
@@ -806,9 +813,177 @@ def test_ws_sans_moteur_et_token_invalide(make_user, make_app):
     user = make_user(role="admin")
     with TestClient(app) as client:
         with client.websocket_connect("/ws/signals") as ws:
-            assert _authenticate(ws, user) == {"type": "hello", "live_access": True}
+            assert _authenticate(ws, user) == {
+                "type": "hello",
+                "live_access": True,
+                "preferences": {
+                    "symbols": list(se.DEFAULT_SYMBOLS), "strategies": list(se.STRATEGIES), "notify": True,
+                },
+            }
         with client.websocket_connect("/ws/signals") as ws:
             ws.send_json({"type": "auth", "token": "jeton-invalide"})
             with pytest.raises(WebSocketDisconnect) as closed:
                 ws.receive_json()
             assert closed.value.code == 4401
+
+
+# ---------------------------------------------------------------------------
+# Préférences de signaux (REST + filtrage du WebSocket)
+# ---------------------------------------------------------------------------
+
+AVAILABLE_STRATEGIES = [
+    {"key": "MA_CROSS", "label": "Croisement MM"},
+    {"key": "RSI", "label": "RSI"},
+    {"key": "SPIKE", "label": "Spike"},
+]
+
+
+def _signal(signal_id: int, symbol: str, strategy: str, *, closed: bool = False) -> dict:
+    base = SAMPLE_CLOSED if closed else SAMPLE_ACTIVE
+    return {**base, "id": signal_id, "symbol": symbol, "symbol_name": NAMES[symbol], "strategy": strategy}
+
+
+def test_preferences_par_defaut_et_401(make_user, auth_headers, make_app):
+    engine = se.SignalEngine(database.SessionLocal, ["R_75", "BOOM1000"])
+    client = TestClient(make_app(signals_router.router, signal_engine=engine))
+    headers = auth_headers(make_user())
+
+    response = client.get("/signals/preferences", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {
+        "symbols": ["R_75", "BOOM1000"],
+        "strategies": ["MA_CROSS", "RSI", "SPIKE"],
+        "notify": True,
+        "available_symbols": [
+            {"symbol": "R_75", "name": "Volatility 75 Index"},
+            {"symbol": "BOOM1000", "name": "Boom 1000 Index"},
+        ],
+        "available_strategies": AVAILABLE_STRATEGIES,
+    }
+    body = {"symbols": ["R_75"], "strategies": ["RSI"], "notify": True}
+    assert client.get("/signals/preferences").status_code == 401
+    assert client.put("/signals/preferences", json=body).status_code == 401
+
+    # Moteur absent : liste de symboles par défaut avec leur nom lisible.
+    client = TestClient(make_app(signals_router.router, signal_engine=None))
+    body = client.get("/signals/preferences", headers=headers).json()
+    assert body["symbols"] == list(se.DEFAULT_SYMBOLS)
+    assert body["available_symbols"] == [{"symbol": symbol, "name": NAMES[symbol]} for symbol in se.DEFAULT_SYMBOLS]
+    assert body["strategies"] == ["MA_CROSS", "RSI", "SPIKE"] and body["notify"] is True
+
+
+def test_preferences_put_get_doublons_listes_vides_et_422(make_user, auth_headers, make_app):
+    engine = se.SignalEngine(database.SessionLocal, ["R_75", "BOOM1000"])
+    client = TestClient(make_app(signals_router.router, signal_engine=engine))
+    headers = auth_headers(make_user())
+    other = auth_headers(make_user())
+
+    response = client.put("/signals/preferences", headers=headers, json={
+        "symbols": ["BOOM1000", "r_75", "BOOM1000"], "strategies": ["RSI", "RSI"], "notify": False,
+    })
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved["symbols"] == ["BOOM1000", "R_75"]                  # doublons retirés, ordre conservé
+    assert saved["strategies"] == ["RSI"] and saved["notify"] is False
+    assert saved["available_strategies"] == AVAILABLE_STRATEGIES
+    assert len(saved["available_symbols"]) == 2
+    assert client.get("/signals/preferences", headers=headers).json() == saved
+    assert client.get("/signals/preferences", headers=other).json()["symbols"] == ["R_75", "BOOM1000"]
+
+    for invalid in (
+        {"symbols": ["XAUUSD"], "strategies": ["RSI"], "notify": True},       # symbole inconnu
+        {"symbols": ["CRASH500"], "strategies": ["RSI"], "notify": True},     # non suivi par le moteur
+        {"symbols": [""], "strategies": ["RSI"], "notify": True},
+        {"symbols": ["R_75"], "strategies": ["MACD"], "notify": True},        # stratégie inconnue
+        {"symbols": ["R_75"], "strategies": ["RSI"]},                         # notify manquant
+    ):
+        assert client.put("/signals/preferences", headers=headers, json=invalid).status_code == 422, invalid
+    assert client.get("/signals/preferences", headers=headers).json() == saved  # rien n'a changé
+
+    response = client.put("/signals/preferences", headers=headers,
+                          json={"symbols": [], "strategies": [], "notify": True})
+    assert response.status_code == 200
+    emptied = client.get("/signals/preferences", headers=headers).json()
+    assert emptied["symbols"] == [] and emptied["strategies"] == [] and emptied["notify"] is True
+    assert emptied == response.json()
+
+
+def test_ws_filtre_selon_les_preferences_et_put_en_cours_de_session(make_user, auth_headers, make_app):
+    engine = se.SignalEngine(database.SessionLocal, ["R_75", "BOOM1000"])
+    app = make_app(signals_router.router, signal_engine=engine)
+    user = make_user(trial_started_at=datetime.now(UTC))
+    headers = auth_headers(user)
+
+    def burst() -> None:
+        engine.hub.publish({"type": "signal", "signal": _signal(1, "BOOM1000", "RSI")})              # symbole
+        engine.hub.publish({"type": "signal", "signal": _signal(2, "R_75", "MA_CROSS")})             # stratégie
+        engine.hub.publish({"type": "update", "signal": _signal(3, "BOOM1000", "RSI", closed=True)})  # symbole
+        engine.hub.publish({"type": "update", "signal": _signal(4, "R_75", "SPIKE", closed=True)})    # stratégie
+        engine.hub.publish({"type": "signal", "signal": _signal(5, "R_75", "RSI")})
+        engine.hub.publish({"type": "update", "signal": _signal(5, "R_75", "RSI", closed=True)})
+
+    with TestClient(app) as client:
+        response = client.put("/signals/preferences", headers=headers,
+                              json={"symbols": ["R_75"], "strategies": ["RSI"], "notify": False})
+        assert response.status_code == 200
+        with client.websocket_connect("/ws/signals") as ws:
+            assert _authenticate(ws, user) == {
+                "type": "hello",
+                "live_access": True,
+                "preferences": {"symbols": ["R_75"], "strategies": ["RSI"], "notify": False},
+            }
+            client.portal.call(burst)
+            assert ws.receive_json() == {"type": "signal", "signal": _signal(5, "R_75", "RSI")}
+            assert ws.receive_json() == {"type": "update", "signal": _signal(5, "R_75", "RSI", closed=True)}
+
+            # PUT pendant la session : appliqué au message suivant, sans reconnexion.
+            response = client.put("/signals/preferences", headers=headers, json={
+                "symbols": ["BOOM1000"], "strategies": ["MA_CROSS", "RSI", "SPIKE"], "notify": True,
+            })
+            assert response.status_code == 200
+
+            def after_put() -> None:
+                engine.hub.publish({"type": "signal", "signal": _signal(6, "R_75", "RSI")})        # retiré
+                engine.hub.publish({"type": "signal", "signal": _signal(7, "BOOM1000", "SPIKE")})
+
+            client.portal.call(after_put)
+            assert ws.receive_json() == {"type": "signal", "signal": _signal(7, "BOOM1000", "SPIKE")}
+
+            # Listes vides : plus aucun signal en direct.
+            client.put("/signals/preferences", headers=headers,
+                       json={"symbols": [], "strategies": [], "notify": True})
+
+            def after_empty() -> None:
+                engine.hub.publish({"type": "signal", "signal": _signal(8, "BOOM1000", "SPIKE")})
+                engine.hub.publish({"type": "update", "signal": _signal(8, "BOOM1000", "SPIKE", closed=True)})
+
+            client.portal.call(after_empty)
+            client.put("/signals/preferences", headers=headers,
+                       json={"symbols": ["R_75"], "strategies": ["MA_CROSS"], "notify": True})
+            client.portal.call(engine.hub.publish, {"type": "signal", "signal": _signal(9, "R_75", "MA_CROSS")})
+            assert ws.receive_json() == {"type": "signal", "signal": _signal(9, "R_75", "MA_CROSS")}
+        wait_until(lambda: engine.hub.subscriber_count == 0)
+
+
+def test_ws_preferences_et_regles_non_live(make_user, auth_headers, make_app):
+    engine = se.SignalEngine(database.SessionLocal, ["R_75", "BOOM1000"])
+    app = make_app(signals_router.router, signal_engine=engine)
+    user = make_user()
+    headers = auth_headers(user)
+
+    def burst() -> None:
+        engine.hub.publish({"type": "signal", "signal": _signal(1, "R_75", "RSI")})                  # non live
+        engine.hub.publish({"type": "update", "signal": _signal(1, "R_75", "RSI")})                  # encore actif
+        engine.hub.publish({"type": "update", "signal": _signal(2, "BOOM1000", "RSI", closed=True)})  # symbole
+        engine.hub.publish({"type": "update", "signal": _signal(3, "R_75", "RSI", closed=True)})
+
+    with TestClient(app) as client:
+        client.put("/signals/preferences", headers=headers,
+                   json={"symbols": ["R_75"], "strategies": ["RSI"], "notify": True})
+        with client.websocket_connect("/ws/signals") as ws:
+            hello = _authenticate(ws, user)
+            assert hello["live_access"] is False
+            assert hello["preferences"] == {"symbols": ["R_75"], "strategies": ["RSI"], "notify": True}
+            client.portal.call(burst)
+            assert ws.receive_json() == {"type": "update", "signal": _signal(3, "R_75", "RSI", closed=True)}
+        wait_until(lambda: engine.hub.subscriber_count == 0)

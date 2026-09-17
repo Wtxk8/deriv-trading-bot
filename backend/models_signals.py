@@ -6,12 +6,13 @@ Séparé de models.py : il suffit d'importer ce module avant
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, Index, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+import models  # noqa: F401  (déclare la table users, cible des clés étrangères)
 from database import Base
 
 SIGNAL_STATUSES = ("active", "hit_tp", "hit_sl", "expired")
@@ -42,3 +43,25 @@ class Signal(Base):
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     close_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     note: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class SignalPreference(Base):
+    """Filtre des signaux en direct choisi par l'utilisateur (symboles, stratégies).
+
+    Absent = tous les symboles disponibles et toutes les stratégies. Les listes
+    sont stockées en JSON ; une liste vide signifie « aucun signal en direct ».
+    """
+
+    __tablename__ = "signal_preferences"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    symbols: Mapped[str] = mapped_column(Text, default="[]", nullable=False)  # liste JSON
+    strategies: Mapped[str] = mapped_column(Text, default="[]", nullable=False)  # liste JSON
+    notify: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )

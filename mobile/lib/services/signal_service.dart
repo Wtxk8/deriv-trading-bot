@@ -21,6 +21,16 @@ String signalStrategyLabel(String code) => switch (code) {
       _ => code,
     };
 
+/// Indices suivis par défaut (repli si le serveur ne fournit pas son catalogue).
+const Map<String, String> kDefaultSignalSymbolNames = {
+  'R_75': 'Volatility 75 Index',
+  'R_100': 'Volatility 100 Index',
+  'BOOM1000': 'Boom 1000 Index',
+  'CRASH1000': 'Crash 1000 Index',
+  'BOOM500': 'Boom 500 Index',
+  'CRASH500': 'Crash 500 Index',
+};
+
 /// Formate un prix : 2 à 4 décimales, sans zéros superflus (5913.279, 1234.50).
 String formatSignalPrice(double value) {
   if (!value.isFinite) return '—';
@@ -54,7 +64,7 @@ class SignalService {
   static const Duration _requestTimeout = Duration(seconds: 15);
   static const Duration _connectTimeout = Duration(seconds: 15);
 
-  Uri _http(String path, Map<String, String> query) =>
+  Uri _http(String path, [Map<String, String>? query]) =>
       secure ? Uri.https(host, path, query) : Uri.http(host, path, query);
   Uri _ws(String path) => Uri.parse('${secure ? 'wss' : 'ws'}://$host$path');
 
@@ -81,6 +91,42 @@ class SignalService {
       throw const SignalServiceException(200, 'Réponse invalide du serveur');
     }
     return SignalStatsReport.fromJson(Map<String, dynamic>.from(body));
+  }
+
+  /// GET /signals/preferences — indices et stratégies suivis par l'utilisateur.
+  Future<SignalPreferences> fetchPreferences(String jwt) async {
+    final response = await http
+        .get(_http('/signals/preferences'), headers: _headers(jwt))
+        .timeout(_requestTimeout);
+    return _preferencesFrom(_decode(response));
+  }
+
+  /// PUT /signals/preferences — renvoie les préférences normalisées par le serveur.
+  Future<SignalPreferences> updatePreferences(
+    String jwt, {
+    required List<String> symbols,
+    required List<String> strategies,
+    required bool notify,
+  }) async {
+    final response = await http
+        .put(
+          _http('/signals/preferences'),
+          headers: {..._headers(jwt), 'Content-Type': 'application/json'},
+          body: jsonEncode(<String, dynamic>{
+            'symbols': symbols,
+            'strategies': strategies,
+            'notify': notify,
+          }),
+        )
+        .timeout(_requestTimeout);
+    return _preferencesFrom(_decode(response));
+  }
+
+  static SignalPreferences _preferencesFrom(dynamic body) {
+    if (body is! Map) {
+      throw const SignalServiceException(200, 'Réponse invalide du serveur');
+    }
+    return SignalPreferences.fromJson(Map<String, dynamic>.from(body));
   }
 
   /// Flux temps réel de /ws/signals.
@@ -118,6 +164,8 @@ class SignalService {
     if (statusCode == 401) return 'Session expirée : reconnectez-vous.';
     final detail = body is Map ? body['detail'] : null;
     if (detail is String && detail.trim().isNotEmpty) return detail;
+    // 422 de validation FastAPI : liste d'erreurs techniques, peu lisible telle quelle.
+    if (detail is List) return 'Données refusées par le serveur. Vérifiez vos choix.';
     if (detail != null) return detail.toString();
     return 'Requête refusée par le serveur';
   }
@@ -192,7 +240,14 @@ class _SignalSocket {
       case 'hello':
         // Connexion authentifiée : le backoff repart de 2 s à la prochaine coupure.
         _backoff = minBackoff;
-        _controller.add(SignalHello(liveAccess: _toBool(message['live_access'])));
+        final preferences = message['preferences'];
+        final prefs = preferences is Map ? preferences : const <String, dynamic>{};
+        _controller.add(SignalHello(
+          liveAccess: _toBool(message['live_access']),
+          symbols: prefs['symbols'] is List ? _codeList(prefs['symbols']) : null,
+          strategies: prefs['strategies'] is List ? _codeList(prefs['strategies']) : null,
+          notify: prefs.containsKey('notify') ? _toBool(prefs['notify']) : null,
+        ));
       case 'signal':
         final signal = Signal.tryParse(message['signal']);
         if (signal != null) _controller.add(SignalCreated(signal));
@@ -266,10 +321,14 @@ sealed class SignalEvent {
   const SignalEvent();
 }
 
-/// Premier message après authentification : droit d'accès aux signaux en direct.
+/// Premier message après authentification : droit d'accès aux signaux en direct
+/// et préférences en vigueur (champs null si le serveur ne les a pas transmis).
 final class SignalHello extends SignalEvent {
-  const SignalHello({required this.liveAccess});
+  const SignalHello({required this.liveAccess, this.symbols, this.strategies, this.notify});
   final bool liveAccess;
+  final List<String>? symbols;
+  final List<String>? strategies;
+  final bool? notify;
 }
 
 /// Nouveau signal publié (envoyé uniquement aux comptes ayant l'accès au direct).
@@ -471,6 +530,107 @@ class SignalStatsReport {
   }
 }
 
+/// Indice proposé dans les préférences.
+class SignalSymbolOption {
+  const SignalSymbolOption({required this.symbol, required this.name});
+  final String symbol;
+  final String name;
+}
+
+/// Stratégie proposée dans les préférences.
+class SignalStrategyOption {
+  const SignalStrategyOption({required this.key, required this.label});
+  final String key;
+  final String label;
+}
+
+/// Choix de l'utilisateur : indices et stratégies suivis, notifications (GET/PUT /signals/preferences).
+class SignalPreferences {
+  const SignalPreferences({
+    required this.symbols,
+    required this.strategies,
+    required this.notify,
+    required this.availableSymbols,
+    required this.availableStrategies,
+  });
+
+  final List<String> symbols;
+  final List<String> strategies;
+  final bool notify;
+  final List<SignalSymbolOption> availableSymbols;
+  final List<SignalStrategyOption> availableStrategies;
+
+  /// Champ absent : tous les indices et stratégies disponibles, notifications actives.
+  factory SignalPreferences.fromJson(Map<String, dynamic> json) {
+    final symbolsCatalog = _symbolOptions(json['available_symbols']);
+    final strategiesCatalog = _strategyOptions(json['available_strategies']);
+    return SignalPreferences(
+      symbols: json['symbols'] is List
+          ? _codeList(json['symbols'])
+          : List.unmodifiable([for (final o in symbolsCatalog) o.symbol]),
+      strategies: json['strategies'] is List
+          ? _codeList(json['strategies'])
+          : List.unmodifiable([for (final o in strategiesCatalog) o.key]),
+      notify: json.containsKey('notify') ? _toBool(json['notify']) : true,
+      availableSymbols: symbolsCatalog,
+      availableStrategies: strategiesCatalog,
+    );
+  }
+
+  /// Le signal porte-t-il sur un indice ET une stratégie choisis ?
+  bool matches(Signal signal) =>
+      symbols.contains(signal.symbol.toUpperCase()) && strategies.contains(signal.strategy.toUpperCase());
+
+  SignalPreferences copyWith({List<String>? symbols, List<String>? strategies, bool? notify}) {
+    return SignalPreferences(
+      symbols: symbols ?? this.symbols,
+      strategies: strategies ?? this.strategies,
+      notify: notify ?? this.notify,
+      availableSymbols: availableSymbols,
+      availableStrategies: availableStrategies,
+    );
+  }
+
+  static List<SignalSymbolOption> _symbolOptions(dynamic raw) {
+    final out = <SignalSymbolOption>[];
+    final seen = <String>{};
+    if (raw is List) {
+      for (final item in raw) {
+        final map = item is Map ? item : null;
+        final symbol = _toStr(map != null ? map['symbol'] : item).trim().toUpperCase();
+        if (symbol.isEmpty || !seen.add(symbol)) continue;
+        final name = _toStr(map?['name']).trim();
+        out.add(SignalSymbolOption(
+          symbol: symbol,
+          name: name.isNotEmpty ? name : (kDefaultSignalSymbolNames[symbol] ?? symbol),
+        ));
+      }
+    }
+    if (out.isNotEmpty) return List.unmodifiable(out);
+    return List.unmodifiable([
+      for (final e in kDefaultSignalSymbolNames.entries) SignalSymbolOption(symbol: e.key, name: e.value),
+    ]);
+  }
+
+  static List<SignalStrategyOption> _strategyOptions(dynamic raw) {
+    final out = <SignalStrategyOption>[];
+    final seen = <String>{};
+    if (raw is List) {
+      for (final item in raw) {
+        final map = item is Map ? item : null;
+        final key = _toStr(map != null ? map['key'] : item).trim().toUpperCase();
+        if (key.isEmpty || !seen.add(key)) continue;
+        final label = _toStr(map?['label']).trim();
+        out.add(SignalStrategyOption(key: key, label: label.isNotEmpty ? label : signalStrategyLabel(key)));
+      }
+    }
+    if (out.isNotEmpty) return List.unmodifiable(out);
+    return List.unmodifiable([
+      for (final key in kSignalStrategies) SignalStrategyOption(key: key, label: signalStrategyLabel(key)),
+    ]);
+  }
+}
+
 class SignalServiceException implements Exception {
   const SignalServiceException(this.statusCode, this.detail);
 
@@ -502,6 +662,19 @@ double? _toDouble(dynamic value) {
   if (value is num) return value.toDouble();
   if (value is String) return double.tryParse(value.trim());
   return null;
+}
+
+/// Liste de codes (indices, stratégies) : chaînes nettoyées, en majuscules, sans doublon.
+List<String> _codeList(dynamic value) {
+  final out = <String>[];
+  if (value is List) {
+    for (final item in value) {
+      if (item == null) continue;
+      final code = _toStr(item).trim().toUpperCase();
+      if (code.isNotEmpty && !out.contains(code)) out.add(code);
+    }
+  }
+  return List.unmodifiable(out);
 }
 
 bool _toBool(dynamic value) {
