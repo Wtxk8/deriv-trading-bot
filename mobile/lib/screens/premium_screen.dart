@@ -178,7 +178,7 @@ class _StatusCard extends StatelessWidget {
           }
           if (s.trialActive) {
             return _line(
-              'Essai gratuit — ${s.trialDaysRemaining} jour${s.trialDaysRemaining > 1 ? "s" : ""} restant',
+              'Essai gratuit — ${s.trialDaysRemaining} jour${s.trialDaysRemaining > 1 ? "s" : ""} restant${s.trialDaysRemaining > 1 ? "s" : ""}',
               s.trialExpiresAt != null ? 'Se termine le ${_fmtDate(s.trialExpiresAt!)}' : '',
               AppColors.primarySoft,
             );

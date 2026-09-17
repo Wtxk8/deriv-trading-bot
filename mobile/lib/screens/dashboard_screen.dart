@@ -1256,7 +1256,7 @@ class _SubscriptionBanner extends ConsumerWidget {
           return _pill(
             icon: Icons.timer_outlined,
             color: AppColors.primarySoft,
-            title: 'Essai gratuit — ${s.trialDaysRemaining} jour${s.trialDaysRemaining > 1 ? "s" : ""} restant',
+            title: 'Essai gratuit — ${s.trialDaysRemaining} jour${s.trialDaysRemaining > 1 ? "s" : ""} restant${s.trialDaysRemaining > 1 ? "s" : ""}',
             subtitle: 'Après cette période, passez au premium pour le compte réel.',
             cta: 'Voir les formules',
             onTap: onOpenPremium,

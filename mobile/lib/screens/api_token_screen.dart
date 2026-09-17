@@ -122,7 +122,8 @@ class _ApiTokenScreenState extends ConsumerState<ApiTokenScreen> {
                     Text('Token API Deriv', style: AppTheme.heading(fontSize: 20)),
                     const SizedBox(height: 8),
                     Text(
-                      'Créez un token avec les autorisations Read, Trade et Payments depuis votre espace Deriv.',
+                      // « Payments » est inutile au robot et donnerait plus de pouvoir que nécessaire.
+                      'Créez un token avec uniquement les autorisations Read et Trade depuis votre espace Deriv.',
                       style: GoogleFonts.manrope(fontSize: 13.5, height: 1.55, color: AppColors.textTertiary),
                     ),
                   ],
