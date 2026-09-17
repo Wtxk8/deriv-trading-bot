@@ -182,6 +182,8 @@ def build() -> None:
     s += bullets([
         "Récupérez le fichier APK transmis (Deriv Trading Bot, environ 49 Mo) et ouvrez-le sur le téléphone Android.",
         "Si Android le demande, autorisez l'installation d'applications depuis cette source.",
+        "Si <b>Google Play Protect</b> affiche un avertissement (application de test non publiée sur le Play Store), "
+        "touchez « Plus de détails » puis « Installer quand même ».",
         "Ouvrez l'application. Lorsque Android le propose, <b>autorisez les notifications</b>.",
     ])
     s.append(Paragraph("Application testée sur Samsung Galaxy A15 (Android 16).", SMALL))
