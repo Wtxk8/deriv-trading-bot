@@ -37,7 +37,14 @@ android {
         applicationId = "com.derivbot.deriv_bot_mobile"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = maxOf(21, flutter.minSdkVersion)
+        // Compatibilité : Android 7.0 (API 24) et supérieur — donc bien au-delà
+        // d'Android 10 (API 29) demandé par le client. 24 est le plancher imposé
+        // par les plugins url_launcher_android et path_provider_android ; il est
+        // figé ici pour qu'une future montée du SDK Flutter ne remonte pas le
+        // minSdk en silence et n'exclue pas des téléphones déjà équipés.
+        minSdk = 24
+        // targetSdk suit le SDK Flutter (API 36 avec Flutter 3.35) : cible
+        // récente exigée par le Play Store, sans impact sur le minSdk.
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

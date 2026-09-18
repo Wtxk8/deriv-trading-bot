@@ -9,9 +9,7 @@ import '../services/bot_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
 import 'admin_user_management_screen.dart';
-import 'api_token_screen.dart';
 import 'copy_trading_screen.dart';
-import 'login_screen.dart';
 import 'premium_screen.dart';
 import 'require_admin.dart';
 import 'signals_screen.dart';
@@ -42,8 +40,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     // Le serveur exige un compte (JWT) pour piloter le robot.
     final jwt = ref.read(jwtProvider);
     if (jwt == null || jwt.isEmpty) {
-      _snack('Connectez-vous pour démarrer le robot');
-      _openLogin();
+      _snack('Session expirée : reconnectez-vous');
+      // Le routeur racine ramène alors à l'écran de connexion.
+      await ref.read(jwtProvider.notifier).clear();
       return;
     }
     final token = ref.read(tokenProvider) ??
@@ -52,6 +51,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       _snack('Token manquant');
       return;
     }
+    // Compte réel = argent réel : confirmation explicite avant de lancer.
+    if (_accountType == 'real' && !await _confirmRealAccount()) return;
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
       await _service.startBot(
@@ -90,7 +92,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: const Text('Deriv refuse votre token API : il est invalide, expiré ou révoqué.'),
       duration: const Duration(seconds: 8),
-      action: SnackBarAction(label: 'Changer', onPressed: _logout),
+      action: SnackBarAction(label: 'Changer', onPressed: _changeDerivToken),
     ));
   }
 
@@ -119,19 +121,77 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _logout() async {
+  /// Efface le token Deriv : le routeur racine réaffiche l'écran de saisie.
+  Future<void> _changeDerivToken() async {
     await ref.read(tokenProvider.notifier).clear();
-    if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => const ApiTokenScreen()),
-    );
   }
 
-  void _openLogin() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-    );
+  /// Déconnexion : le routeur racine revient à l'écran de connexion.
+  ///
+  /// Le token Deriv est effacé lui aussi — il appartient au compte qui se
+  /// déconnecte et ne doit pas servir à la session suivante.
+  Future<void> _signOut() async {
+    await ref.read(tokenProvider.notifier).clear();
+    await ref.read(jwtProvider.notifier).clear();
   }
+
+  /// Confirmation obligatoire avant de lancer le robot sur le compte réel.
+  Future<bool> _confirmRealAccount() async {
+    if (!mounted) return false;
+    final String currency =
+        (ref.read(botStatusStreamProvider).value?['currency'] as String?) ?? 'USD';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surfaceHigh,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadii.lg)),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 22),
+            const SizedBox(width: 10),
+            Expanded(child: Text('Trader en argent réel', style: AppTheme.heading(fontSize: 17))),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Les ordres seront passés sur votre compte réel Deriv : les gains comme les pertes seront en argent réel.',
+              style: GoogleFonts.manrope(fontSize: 13.5, height: 1.5, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 14),
+            _confirmRow('Mise par trade', '${_stake.toStringAsFixed(2)} $currency'),
+            _confirmRow('Stop loss du jour', '-${_stopLoss.toStringAsFixed(2)} $currency'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text('Annuler',
+                style: GoogleFonts.manrope(fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.textTertiary)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Démarrer en réel',
+                style: GoogleFonts.manrope(fontSize: 13.5, fontWeight: FontWeight.w800, color: AppColors.warning)),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Widget _confirmRow(String label, String value) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: GoogleFonts.manrope(fontSize: 12.5, color: AppColors.textTertiary)),
+            Text(value, style: AppTheme.mono(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+          ],
+        ),
+      );
 
   void _openSignals() {
     Navigator.of(context).push(
@@ -186,7 +246,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   Widget build(BuildContext context) {
     final statusAsync = ref.watch(botStatusStreamProvider);
     final isAdmin = ref.watch(isAdminProvider);
-    final isLoggedIn = ref.watch(jwtProvider) != null;
+    final isLoggedIn = ref.watch(hasValidSessionProvider);
     final Map<String, dynamic> status = statusAsync.maybeWhen(
       data: (d) => d,
       orElse: () => const <String, dynamic>{},
@@ -197,7 +257,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final double pnl = (status['pnl'] as num?)?.toDouble() ?? 0.0;
     final double balance = (status['current_balance'] as num?)?.toDouble() ?? 0.0;
     final String currency = (status['currency'] as String?) ?? 'USD';
-    final bool isRealAccount = (status['account_type'] as String?) == 'real';
+    // Robot arrêté : l'en-tête suit le sélecteur, pour que le choix Démo/Réel
+    // soit visible immédiatement. Robot en marche : le compte réellement
+    // utilisé côté serveur fait foi (il l'emporte en cas de divergence).
+    final bool isRealAccount = isActive
+        ? (status['account_type'] as String?) == 'real'
+        : _accountType == 'real';
     final int won = (status['trades_won'] as num?)?.toInt() ?? 0;
     final int lost = (status['trades_lost'] as num?)?.toInt() ?? 0;
     final int total = won + lost;
@@ -216,9 +281,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               pillText: pillText,
               pillColor: pillColor,
               isAdmin: isAdmin,
-              isLoggedIn: isLoggedIn,
-              onLogout: _logout,
-              onLogin: _openLogin,
+              onChangeToken: _changeDerivToken,
+              onSignOut: _signOut,
               onAdmin: _openAdmin,
             ),
             Expanded(
@@ -231,7 +295,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   children: [
                     _SubscriptionBanner(
                       isLoggedIn: isLoggedIn,
-                      onLogin: _openLogin,
+                      // Session perdue en cours de route : la déconnexion
+                      // renvoie à l'écran de connexion via le routeur racine.
+                      onLogin: _signOut,
                       onOpenPremium: () => _openPremium(),
                     ),
                     const SizedBox(height: 14),
@@ -239,6 +305,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       value: _accountType,
                       onChanged: (v) => setState(() => _accountType = v),
                     ),
+                    // Le choix n'est transmis au serveur qu'au démarrage :
+                    // on avertit tant que le robot est arrêté.
+                    if (_accountType == 'real' && !isActive) const _RealAccountNotice(),
                     const SizedBox(height: 14),
                     Row(
                       children: [
@@ -335,9 +404,8 @@ class _Header extends StatelessWidget {
     required this.pillText,
     required this.pillColor,
     required this.isAdmin,
-    required this.isLoggedIn,
-    required this.onLogout,
-    required this.onLogin,
+    required this.onChangeToken,
+    required this.onSignOut,
     required this.onAdmin,
   });
 
@@ -346,9 +414,8 @@ class _Header extends StatelessWidget {
   final String pillText;
   final Color pillColor;
   final bool isAdmin;
-  final bool isLoggedIn;
-  final VoidCallback onLogout;
-  final VoidCallback onLogin;
+  final VoidCallback onChangeToken;
+  final VoidCallback onSignOut;
   final VoidCallback onAdmin;
 
   @override
@@ -374,12 +441,13 @@ class _Header extends StatelessWidget {
           ),
           StatusPill(label: pillText, color: pillColor),
           const SizedBox(width: 8),
-          if (isAdmin)
-            _IconChip(icon: Icons.admin_panel_settings_outlined, tooltip: 'Admin', onPressed: onAdmin)
-          else if (!isLoggedIn)
-            _IconChip(icon: Icons.person_outline, tooltip: 'Connexion', onPressed: onLogin),
+          if (isAdmin) ...[
+            _IconChip(icon: Icons.admin_panel_settings_outlined, tooltip: 'Admin', onPressed: onAdmin),
+            const SizedBox(width: 6),
+          ],
+          _IconChip(icon: Icons.vpn_key_outlined, tooltip: 'Changer de token Deriv', onPressed: onChangeToken),
           const SizedBox(width: 6),
-          _IconChip(icon: Icons.logout_rounded, tooltip: 'Changer de token', onPressed: onLogout),
+          _IconChip(icon: Icons.logout_rounded, tooltip: 'Se déconnecter', onPressed: onSignOut),
         ],
       ),
     );
@@ -1322,6 +1390,42 @@ class _SubscriptionBanner extends ConsumerWidget {
     final l = dt.toLocal();
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(l.day)}/${two(l.month)}/${l.year}';
+  }
+}
+
+/// Avertissement affiché quand « Réel » est choisi et le robot encore arrêté.
+class _RealAccountNotice extends StatelessWidget {
+  const _RealAccountNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.warning.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppRadii.md),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.34), width: 1),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: AppColors.warning, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Compte réel sélectionné : au démarrage, les ordres seront passés sur votre compte Deriv réel, avec de l\'argent réel.',
+              style: GoogleFonts.manrope(
+                fontSize: 12.5,
+                height: 1.45,
+                fontWeight: FontWeight.w600,
+                color: AppColors.warning,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

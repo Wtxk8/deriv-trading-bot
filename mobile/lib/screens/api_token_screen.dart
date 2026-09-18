@@ -3,10 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../providers/auth_provider.dart';
 import '../providers/bot_provider.dart';
 import '../services/bot_service.dart';
 import '../theme/app_theme.dart';
-import 'dashboard_screen.dart';
+import 'login_screen.dart';
 
 /// URL de sign-up Deriv récupérée dynamiquement du backend (token d'affiliation IB).
 Future<void> _openDerivSignup(BotService service) async {
@@ -52,13 +53,18 @@ class _ApiTokenScreenState extends ConsumerState<ApiTokenScreen> {
     setState(() => _saving = true);
     await ref.read(tokenProvider.notifier).save(token);
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => const DashboardScreen()),
-    );
+    // Le routeur racine bascule sur le tableau de bord dès que le token est
+    // enregistré ; si cet écran avait été empilé, on le referme.
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Garde-fou : le token API Deriv n'est accessible qu'avec un compte
+    // applicatif connecté. Sans JWT valide, on renvoie vers la connexion.
+    if (!ref.watch(hasValidSessionProvider)) return const LoginScreen();
+
     final tok = _controller.text.trim();
     final valid = tok.length >= 8;
 

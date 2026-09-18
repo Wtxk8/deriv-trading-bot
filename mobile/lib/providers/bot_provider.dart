@@ -18,10 +18,13 @@ final botServiceProvider = Provider<BotService>((ref) => BotService());
 /// Notifier lisant/écrivant le token dans le stockage sécurisé.
 class TokenNotifier extends StateNotifier<String?> {
   TokenNotifier(this._storage) : super(null) {
-    _load();
+    loaded = _load();
   }
 
   final FlutterSecureStorage _storage;
+
+  /// Se termine quand le token stocké a été relu (attendu par le routage initial).
+  late final Future<void> loaded;
 
   Future<void> _load() async {
     state = await _storage.read(key: kTokenKey);
@@ -43,10 +46,17 @@ final tokenProvider = StateNotifierProvider<TokenNotifier, String?>(
   (ref) => TokenNotifier(ref.watch(secureStorageProvider)),
 );
 
-/// Lecture unique du token au démarrage (routage initial).
-final bootTokenProvider = FutureProvider<String?>(
-  (ref) => ref.read(secureStorageProvider).read(key: kTokenKey),
-);
+/// Attend la relecture du JWT et du token Deriv au démarrage.
+///
+/// Le routeur racine patiente sur ce future : sans lui, `jwtProvider` et
+/// `tokenProvider` valent encore null pendant la lecture du stockage sécurisé
+/// et l'écran de connexion clignoterait à chaque lancement.
+final sessionBootProvider = FutureProvider<void>((ref) async {
+  await Future.wait(<Future<void>>[
+    ref.read(jwtProvider.notifier).loaded,
+    ref.read(tokenProvider.notifier).loaded,
+  ]);
+});
 
 /// Flux temps réel du statut du bot de l'utilisateur connecté.
 ///

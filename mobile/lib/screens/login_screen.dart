@@ -6,7 +6,6 @@ import '../providers/auth_provider.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
-import 'dashboard_screen.dart';
 import 'register_screen.dart';
 
 /// Connexion au compte applicatif (email + mdp) — dark premium.
@@ -42,9 +41,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       final jwt = await ref.read(authServiceProvider).login(email, password);
       await ref.read(jwtProvider.notifier).save(jwt);
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const DashboardScreen()),
-      );
+      // Le routeur racine enchaîne tout seul : écran du token Deriv si aucun
+      // token n'est enregistré, sinon tableau de bord. Si cet écran avait été
+      // empilé (session expirée en cours de route), on le referme.
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) navigator.pop();
     } on AuthServiceException catch (e) {
       _snack(e.toString());
     } catch (e) {
@@ -63,7 +64,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(icon: const Icon(Icons.arrow_back, size: 20), onPressed: () => Navigator.of(context).pop()),
+        // Écran racine du parcours : pas de flèche « retour » vers le vide.
+        leading: Navigator.canPop(context)
+            ? IconButton(icon: const Icon(Icons.arrow_back, size: 20), onPressed: () => Navigator.of(context).pop())
+            : null,
       ),
       body: SafeArea(
         child: Padding(

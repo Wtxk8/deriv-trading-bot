@@ -13,10 +13,13 @@ final authServiceProvider = Provider<AuthService>((ref) => AuthService());
 /// Notifier lisant/écrivant le JWT dans le stockage sécurisé.
 class JwtNotifier extends StateNotifier<String?> {
   JwtNotifier(this._storage) : super(null) {
-    _load();
+    loaded = _load();
   }
 
   final FlutterSecureStorage _storage;
+
+  /// Se termine quand le JWT stocké a été relu (attendu par le routage initial).
+  late final Future<void> loaded;
 
   Future<void> _load() async {
     final value = await _storage.read(key: kJwtKey);
@@ -42,6 +45,15 @@ class JwtNotifier extends StateNotifier<String?> {
 final jwtProvider = StateNotifierProvider<JwtNotifier, String?>(
   (ref) => JwtNotifier(ref.watch(secureStorageProvider)),
 );
+
+/// Vrai quand une session applicative utilisable est en mémoire.
+///
+/// Sert de garde-fou unique : sans session valide, ni le token API Deriv ni le
+/// tableau de bord ne sont accessibles.
+final hasValidSessionProvider = Provider<bool>((ref) {
+  final jwt = ref.watch(jwtProvider);
+  return jwt != null && jwt.isNotEmpty && !JwtUtils.isExpired(jwt);
+});
 
 /// Rôle courant décodé depuis le JWT ('admin', 'user', ou null si absent/invalide).
 final currentUserRoleProvider = Provider<String?>((ref) {

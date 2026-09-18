@@ -6,7 +6,6 @@ import '../providers/auth_provider.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/brand_logo.dart';
-import 'dashboard_screen.dart';
 
 /// Création de compte — déclenche l'essai gratuit 7 jours + auto-login.
 class RegisterScreen extends ConsumerStatefulWidget {
@@ -52,10 +51,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       final jwt = await ref.read(authServiceProvider).register(email: email, password: pwd);
       await ref.read(jwtProvider.notifier).save(jwt);
       if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute<void>(builder: (_) => const DashboardScreen()),
-        (route) => false,
-      );
+      // Ferme l'inscription puis la connexion : le routeur racine affiche
+      // ensuite l'écran du token Deriv (nouveau compte = aucun token encore).
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) navigator.pop();
+      if (navigator.canPop()) navigator.pop();
     } on AuthServiceException catch (e) {
       _snack(e.toString());
     } catch (e) {
